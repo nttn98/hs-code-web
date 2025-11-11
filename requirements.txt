@@ -1,5 +1,8 @@
-flask
-groq
-pandas
-openpyxl
 python-dotenv
+requests
+beautifulsoup4
+pandas
+Flask
+groq
+openpyxl
+xlrd
