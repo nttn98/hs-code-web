@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="vi">
+  <head>
+    <meta charset="UTF-8" />
+    <title>HS Code Finder</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        font-family: "Segoe UI", Arial, sans-serif;
+        background: #eef1f5;
+        height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        overflow: hidden;
+      }
+
+      .container {
+        width: 860px;
+        max-width: 95%;
+        height: 90vh;
+        max-height: 640px;
+        background: #fff;
+        border-radius: 12px;
+        box-shadow: 0 3px 14px rgba(0, 0, 0, 0.08);
+        padding: 22px 26px;
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+      }
+
+      h1 {
+        text-align: center;
+        margin: 0;
+        font-size: 23px;
+        color: #2a2a2a;
+        letter-spacing: 0.5px;
+      }
+
+      form {
+        margin-top: 10px;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+
+      label {
+        font-weight: 600;
+        color: #333;
+        font-size: 14px;
+      }
+
+      textarea {
+        width: 100%;
+        height: 100px;
+        padding: 10px;
+        border: 1px solid #ccc;
+        border-radius: 6px;
+        font-size: 14px;
+        resize: none;
+        line-height: 1.5;
+        transition: border-color 0.2s;
+      }
+
+      textarea:focus {
+        border-color: #007bff;
+        outline: none;
+      }
+
+      textarea::placeholder {
+        color: #999;
+      }
+
+      button {
+        align-self: flex-start;
+        padding: 9px 18px;
+        background: #007bff;
+        color: #fff;
+        border: none;
+        border-radius: 6px;
+        cursor: pointer;
+        font-size: 14px;
+        transition: background 0.2s;
+      }
+
+      button:hover {
+        background: #0062d9;
+      }
+
+      .result-box {
+        flex: 1;
+        background: #fafafa;
+        border: 1px solid #ddd;
+        border-radius: 8px;
+        display: flex;
+        flex-direction: column;
+        padding: 16px 18px;
+        overflow: hidden;
+        margin-top: 10px;
+      }
+
+      .result-title {
+        font-weight: 600;
+        color: #333;
+        margin-bottom: 10px;
+        font-size: 15px;
+        text-transform: uppercase;
+        letter-spacing: 0.4px;
+      }
+
+      .hs-line {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 12px;
+        flex-wrap: wrap;
+      }
+
+      .hs-label {
+        font-weight: bold;
+        color: #007bff;
+        font-size: 15px;
+      }
+
+      .hs-code {
+        font-size: 22px;
+        font-weight: 700;
+        color: #007bff;
+        background: #e8f1ff;
+        padding: 4px 12px;
+        border-radius: 6px;
+        letter-spacing: 1px;
+      }
+
+      /* --- Caselaw hierarchy --- */
+      .chapter-line {
+        font-size: 14px;
+        color: #c62828;
+        margin-bottom: 6px;
+        font-weight: 700;
+        border-left: 4px solid #c62828;
+        padding-left: 8px;
+        background: #fff3f3;
+        border-radius: 4px;
+      }
+
+      .caselaw-groups {
+        margin: 6px 0 10px 18px;
+        padding: 0;
+        list-style: none;
+      }
+
+      .caselaw-groups li {
+        font-size: 13px;
+        color: #003366;
+        margin: 3px 0;
+        padding: 6px 10px;
+        background: #f0f6ff;
+        border-radius: 5px;
+        border-left: 3px solid #007bff;
+      }
+
+      .list-title {
+        margin-top: 10px;
+        font-weight: 600;
+        color: #444;
+        font-size: 14px;
+      }
+
+      .name-list {
+        margin-top: 6px;
+        padding-left: 20px;
+        line-height: 1.5;
+        font-size: 13px;
+        color: #333;
+      }
+
+      .name-list li {
+        margin-bottom: 5px;
+        padding: 5px 8px;
+        border-radius: 4px;
+      }
+
+      .name-list li:nth-child(odd) {
+        background: #f7f9fb;
+      }
+
+      .name-list li:nth-child(even) {
+        background: #eef4f9;
+      }
+
+      .result-content {
+        flex: 1;
+        overflow-y: auto;
+        overflow-x: hidden;
+        padding-right: 6px;
+        scroll-behavior: smooth;
+      }
+
+      .note {
+        flex-shrink: 0;
+        background: #fffdfd;
+        text-align: right;
+        font-size: 11.5px;
+        color: #666;
+        padding: 6px 10px;
+        border-top: 1px solid #ddd;
+        border-radius: 0 0 8px 8px;
+      }
+
+      .placeholder {
+        color: #777;
+        font-size: 14px;
+        margin-top: 20px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <h1>HS Code Finder</h1>
+
+      <form method="post" id="hsForm">
+        <label for="description">Mô tả hàng hóa:</label>
+        <textarea
+          id="description"
+          name="description"
+          placeholder="Ví dụ: Ván MDF có chiều dày 4mm, dùng làm nội thất..."
+        >
+{{ user_query }}</textarea
+        >
+        <button type="submit">Tìm HS code</button>
+      </form>
+
+      <div class="result-box">
+        <div class="result-content">
+          <div class="result-title">Kết quả gợi ý</div>
+
+          {% if result %} {% set lines = result.split('\n') %} {% set hs_line =
+          lines[0] if lines|length > 0 else '' %} {% set hs_match =
+          hs_line.split(':') %} {% if hs_match|length > 1 %}
+          <div class="hs-line">
+            <span class="hs-label">{{ hs_match[0].strip() }}:</span>
+            <span class="hs-code">{{ hs_match[1].strip() }}</span>
+          </div>
+
+          {% if caselaw_data and caselaw_data.chapter %}
+          <div class="chapter-line">{{ caselaw_data.chapter }}</div>
+          {% endif %} {% if caselaw_data and caselaw_data.groups %}
+          <ul class="caselaw-groups">
+            {% for g in caselaw_data.groups %}
+            <li>{{ g }}</li>
+            {% endfor %}
+          </ul>
+          {% endif %} {% else %}
+          <div>{{ result }}</div>
+          {% endif %} {% if lines|length > 1 %}
+          <div class="list-title">Các tên hàng khớp trong dữ liệu:</div>
+          <ul class="name-list">
+            {% for line in lines[1:] %} {% if line.strip().startswith('-') %}
+            <li>{{ line.strip()[1:] | trim }}</li>
+            {% endif %} {% endfor %}
+          </ul>
+          {% endif %} {% else %}
+          <div class="placeholder">
+            Nhập mô tả hàng hóa và bấm <strong>Tìm HS code</strong> để xem gợi
+            ý.
+          </div>
+          {% endif %}
+
+          <div class="note">
+            Gợi ý tự động — vui lòng đối chiếu lại với Biểu thuế VN
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      // Enter = submit, Shift+Enter = xuống dòng
+      const textarea = document.getElementById("description");
+      const form = document.getElementById("hsForm");
+
+      textarea.addEventListener("keydown", function (e) {
+        if (e.key === "Enter" && !e.shiftKey) {
+          e.preventDefault();
+          form.submit();
+        }
+      });
+    </script>
+  </body>
+</html>
