@@ -1,60 +1,23 @@
 # model_client.py
-"""
-Optimized model client for HS code selection using Groq LLM.
-
-Main ideas to save tokens while keeping accuracy:
-- Local pre-filter: compute similarity between user query and each candidate.description
-  using difflib.SequenceMatcher and keyword overlap, then keep top_k candidates only.
-- Cache results (cache.json) to avoid repeated LLM calls for same/similar queries.
-- Minimal, deterministic prompt + low max_tokens to reduce output tokens.
-- Fallback to best local candidate if LLM fails or rate-limited.
-"""
 import os
 import re
-import json
-import time
-import math
-import hashlib
 from typing import List, Dict, Optional, Tuple
 from dotenv import load_dotenv
 from groq import Groq, RateLimitError
-from difflib import SequenceMatcher
 
 load_dotenv()
-
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 if not GROQ_API_KEY:
     raise RuntimeError("Chưa cấu hình GROQ_API_KEY trong file .env")
 
-# Config (can override via env)
-MODEL_NAME = os.environ.get("MODEL_NAME", "llama-3.1-8b-instant")
-MAX_TOKENS = int(os.environ.get("GC_MAX_TOKENS", "64"))
-TEMPERATURE = float(os.environ.get("GC_TEMPERATURE", "0"))
-TOP_K = int(os.environ.get("GC_TOP_K", "5"))           # số ứng viên gửi lên model
-CACHE_PATH = os.environ.get("GC_CACHE_PATH", "cache.json")
-SIMILARITY_THRESHOLD_FALLBACK = float(os.environ.get("GC_SIM_FALLBACK", "0.72"))
-# If top local similarity >= threshold and LLM unavailable, we fallback to that.
-
+# Mặc định dùng model nhẹ hơn để tiết kiệm token
+MODEL_NAME = os.environ.get("MODEL_NAME")
 client = Groq(api_key=GROQ_API_KEY)
 
 
-# ---------------------------
-# Utility helpers
-# ---------------------------
-def _norm_text(s: str) -> str:
-    """Normalize text for caching / matching (lowercase, strip, collapse spaces)."""
-    if s is None:
-        return ""
-    t = re.sub(r"\s+", " ", str(s).strip().lower())
-    return t
-
-
-def _hash_query(s: str) -> str:
-    """Stable hash for query to use in cache keys (use normalized text)."""
-    h = hashlib.sha256(_norm_text(s).encode("utf-8")).hexdigest()
-    return h
-
-
+# -------------------------
+# Helpers: parsing / rules
+# -------------------------
 def format_hs_code(hs: str) -> str:
     digits = re.sub(r"\D", "", str(hs))
     if len(digits) == 8:
@@ -64,92 +27,274 @@ def format_hs_code(hs: str) -> str:
     return str(hs)
 
 
-def _similarity(a: str, b: str) -> float:
-    """Return similarity score in [0,1] between a and b using SequenceMatcher."""
-    if not a or not b:
-        return 0.0
-    return SequenceMatcher(None, a, b).ratio()
-
-
-def _keyword_overlap_score(query: str, text: str) -> float:
-    """Simple keyword overlap: fraction of query words present in text."""
-    q_words = [w for w in re.split(r"\W+", query.lower()) if w and len(w) > 1]
-    if not q_words:
-        return 0.0
-    t = text.lower()
-    hit = sum(1 for w in q_words if w in t)
-    return hit / len(q_words)
-
-
-# ---------------------------
-# Cache functions
-# ---------------------------
-def _load_cache(path: str = CACHE_PATH) -> Dict:
-    try:
-        if os.path.exists(path):
-            with open(path, "r", encoding="utf-8") as f:
-                return json.load(f)
-    except Exception:
-        pass
-    return {}
-
-
-def _save_cache(cache: Dict, path: str = CACHE_PATH) -> None:
-    try:
-        tmp = path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(cache, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, path)
-    except Exception:
-        pass
-
-
-# ---------------------------
-# Pre-filtering: choose top_k candidates locally
-# ---------------------------
-def rank_candidates_by_relevance(query: str, candidates: List[Dict], top_k: int = TOP_K
-                                 ) -> List[Tuple[Dict, float]]:
+def parse_thickness_from_text(text: str) -> List[Tuple[Optional[str], float]]:
     """
-    Score each candidate by combination of SequenceMatcher similarity and keyword overlap,
-    then return top_k (candidate, score) sorted desc.
+    Tìm các biểu diễn độ dày trong text, trả về list các tuple (comparator, value_mm)
+    comparator có thể là '<', '<=', '>', '>=', '==' hoặc None (nếu chỉ số đơn).
+    Ví dụ nhận được:
+      "dưới 4mm" -> [('<', 4.0)]
+      "4 mm" -> [(None, 4.0)]
     """
-    q_norm = _norm_text(query)
+    text = str(text).lower()
+    results = []
+
+    # Các mẫu như "dưới 4mm", "ít hơn 4 mm", "<4mm", "≤5 mm", ">= 10mm"
+    patterns = [
+        (r"(dưới|<|ít hơn|không quá|<=|≤)\s*([0-9]+(?:[\.,][0-9]+)?)\s*mm", "<="),
+        (r"(trên|>|lớn hơn|>=|≥)\s*([0-9]+(?:[\.,][0-9]+)?)\s*mm", ">="),
+        (r"([0-9]+(?:[\.,][0-9]+)?)\s*-\s*([0-9]+(?:[\.,][0-9]+)?)\s*mm", "range"),
+        (r"([0-9]+(?:[\.,][0-9]+)?)\s*mm", "=="),
+    ]
+
+    for pat, op in patterns:
+        for m in re.finditer(pat, text):
+            if op == "range":
+                a = float(m.group(1).replace(",", "."))
+                b = float(m.group(2).replace(",", "."))
+                # represent range as two tuples: >=a and <=b
+                results.append((">=", a))
+                results.append(("<= ", b))
+            else:
+                try:
+                    val = float(m.group(2).replace(",", "."))
+                except Exception:
+                    val = float(m.group(1).replace(",", "."))
+                # map operator labels to symbolic comparators
+                if op == "<=":
+                    comp = "<="
+                elif op == ">=":
+                    comp = ">="
+                elif op == "==":
+                    comp = "=="
+                else:
+                    comp = None
+                results.append((comp, val))
+
+    # also catch patterns like "dưới 4" without mm but context contains 'dày' nearby
+    for m in re.finditer(r"(dày|độ dày).{0,20}?([0-9]+(?:[\.,][0-9]+)?)\s*(mm)?", text):
+        try:
+            val = float(m.group(2).replace(",", "."))
+            results.append((None, val))
+        except:
+            pass
+
+    return results
+
+
+def parse_specs_from_query(query: str) -> Dict:
+    """
+    Trích thông số quan trọng từ câu mô tả: material, thickness comparator/value, keywords.
+    Trả về dict như:
+      { "material": ["mdf", "gỗ"], "thickness": [('<', 4.0), ...], "keywords": ["trẻ em"] }
+    """
+    q = str(query).lower()
+    specs = {"material": [], "thickness": [], "keywords": []}
+
+    # materials (expandable)
+    mats = ["mdf", "ván mdf", "ván", "gỗ", "fiberboard", "hdf", "plywood", "veneer"]
+    for m in mats:
+        if m in q:
+            specs["material"].append(m)
+
+    # keywords
+    kws = ["trẻ em", "trẻ-em", "child", "baby", "giày", "trẻ em"]  # add as needed
+    for k in kws:
+        if k in q:
+            specs["keywords"].append(k)
+
+    # thickness
+    specs["thickness"] = parse_thickness_from_text(q)
+
+    return specs
+
+
+def extract_numbers_from_text(text: str) -> List[float]:
+    """Trích tất cả số (mm) có khả năng là độ dày/kích thước."""
+    nums = []
+    for m in re.finditer(r"([0-9]+(?:[\.,][0-9]+)?)\s*mm", str(text).lower()):
+        try:
+            nums.append(float(m.group(1).replace(",", ".")))
+        except:
+            pass
+    # fallback: bare numbers (may be risky)
+    return nums
+
+
+def candidate_matches_specs(row: Dict, specs: Dict) -> Tuple[bool, int]:
+    """
+    Kiểm tra candidate có match với specs.
+    Trả về (match_bool, score) — score càng cao càng match tốt.
+    Logic:
+      - +10 nếu material xuất hiện trong description/ten_hang
+      - +20 nếu có độ dày match (so sánh theo comparator)
+      - +5 nếu keyword xuất hiện
+      - +1 nếu candidate chứa bất kỳ số nào (gợi ý có thông tin kích thước)
+    """
+    desc_fields = []
+    if row.get("ten_hang"):
+        desc_fields.append(str(row.get("ten_hang", "")).lower())
+    if row.get("description"):
+        desc_fields.append(str(row.get("description", "")).lower())
+    desc = " | ".join(desc_fields)
+
+    score = 0
+    matched = False
+
+    # material
+    for m in specs.get("material", []):
+        if m and m in desc:
+            score += 10
+            matched = True
+
+    # keywords
+    for k in specs.get("keywords", []):
+        if k and k in desc:
+            score += 5
+            matched = True
+
+    # numbers in candidate
+    cand_nums = extract_numbers_from_text(desc)
+    if cand_nums:
+        score += 1
+
+    # thickness matching: if specs has comparators, try to evaluate
+    th_specs = specs.get("thickness", [])
+    if th_specs:
+        for comp, val in th_specs:
+            for cand_val in cand_nums:
+                try:
+                    if comp in ("<", "<=") or comp is None and comp != ">=":
+                        # treat None/== as equality-ish; but if user said "dưới 4mm" comp is '<='
+                        if cand_val <= val:
+                            score += 20
+                            matched = True
+                            break
+                    if comp in (">", ">="):
+                        if cand_val >= val:
+                            score += 20
+                            matched = True
+                            break
+                    if comp == "==":
+                        if abs(cand_val - val) < 1e-6:
+                            score += 20
+                            matched = True
+                            break
+                except Exception:
+                    pass
+
+            # if candidate has no explicit numbers but description contains textual ranges, try substring match
+            if not cand_nums:
+                # look for phrases like 'không quá 5 mm' or 'trên 9 mm' in desc
+                if comp == "<=" and re.search(r"(không quá|dưới|ít hơn|<=|≤)\s*%s\s*mm" % int(val), desc):
+                    score += 20
+                    matched = True
+                if comp == ">=" and re.search(r"(trên|lớn hơn|>=|≥)\s*%s\s*mm" % int(val), desc):
+                    score += 20
+                    matched = True
+
+    return matched, score
+
+
+def filter_candidates_by_specs(candidates: List[Dict], specs: Dict) -> List[Dict]:
+    """
+    Lọc và sắp xếp candidate dựa trên specs.
+    Trả về danh sách đã sort theo score giảm dần.
+    Nếu tất cả score==0 thì trả về nguyên list (không lọc).
+    """
     scored = []
     for row in candidates:
-        desc = _norm_text(row.get("description", "") or "")
-        # compute scores
-        sim = _similarity(q_norm, desc)
-        kw = _keyword_overlap_score(q_norm, desc)
-        # combine: weighted sum (favor similarity but boost keyword match)
-        score = 0.65 * sim + 0.35 * kw
-        scored.append((row, score))
-    scored.sort(key=lambda x: x[1], reverse=True)
-    return scored[:max(1, min(top_k, len(scored)))]
+        matched, score = candidate_matches_specs(row, specs)
+        scored.append((score, row))
+
+    # sort desc
+    scored.sort(key=lambda x: x[0], reverse=True)
+
+    # if top score is 0 -> no useful info, return original
+    if scored and scored[0][0] == 0:
+        return candidates
+
+    # else return rows with score > 0 (but keep a few top ones)
+    filtered = [r for s, r in scored if s > 0]
+    # if filtered is empty (shouldn't), fallback
+    if not filtered:
+        return candidates
+    # limit top N to reduce prompt size
+    return filtered[:12]
 
 
-# ---------------------------
-# LLM call (minimal prompt)
-# ---------------------------
-def _call_model_select_hs(query: str, top_candidates: List[Dict]) -> Tuple[Optional[str], Optional[str]]:
+# -------------------------
+# LLM call + main entry
+# -------------------------
+def _extract_hs_from_output(text: str) -> Optional[str]:
+    m = re.search(r"\b\d{4}(?:\.\d{2}(?:\.\d{2})?)?\b", text)
+    return m.group(0) if m else None
+
+
+def build_context_for_llm(candidates: List[Dict]) -> str:
     """
-    Call Groq LLM with a minimal prompt and the small list of top_candidates.
-    Returns (chosen_hs_text, raw_model_output).
-    chosen_hs_text is like '6403.99.90' or '64039990' or '6403.99'
+    Format ngắn gọn hơn cho LLM: mỗi dòng 'idx. HS: xxxx | short desc'
     """
-    # build compact context: index. hs_raw: shortdesc (truncate)
-    ctx_lines = []
-    for i, row in enumerate(top_candidates, start=1):
-        hs_raw = row.get("hs_code", "")
-        desc = str(row.get("description", "") or "")[:140].replace("\n", " ")
-        ctx_lines.append(f"{i}. {hs_raw} | {desc}")
-    context = "\n".join(ctx_lines)
+    lines = []
+    for i, row in enumerate(candidates, start=1):
+        raw = row.get("hs_code", "")
+        desc = (row.get("ten_hang") or row.get("description") or "")[:140]
+        lines.append(f"{i}. HS: {raw} | {desc}")
+    return "\n".join(lines)
+
+
+def ask_model_for_hs(query: str, candidate_rows) -> str:
+    """
+    Quy trình:
+      1) parse specs từ query
+      2) filter candidates theo specs
+      3) nếu chỉ 1 candidate => chọn deterministic (không gọi LLM)
+      4) nếu >1 => gọi LLM với danh sách đã lọc
+    """
+    candidates = candidate_rows.to_dict(orient="records")
+    if not candidates:
+        return "Không tìm được mã HS ứng viên nào."
+
+    specs = parse_specs_from_query(query)
+    filtered = filter_candidates_by_specs(candidates, specs)
+
+    # If filter yields single candidate, return it deterministically
+    if len(filtered) == 1:
+        chosen = filtered[0]
+        formatted = format_hs_code(chosen.get("hs_code", ""))
+        # collect names for display
+        names = []
+        for r in [chosen]:
+            n = r.get("ten_hang") or r.get("description") or ""
+            n = str(n).strip()
+            if n and n not in names:
+                names.append(n)
+        lines = [f"HS code: {formatted}"]
+        if names:
+            lines.append("Các tên hàng khớp trong dữ liệu:")
+            for name in names[:8]:
+                lines.append(f"- {name}")
+        return "\n".join(lines)
+
+    # else, prepare context for LLM using filtered (or original if filtered==original)
+    llm_candidates = filtered if filtered else candidates
+    context = build_context_for_llm(llm_candidates)
 
     system_prompt = (
         "Bạn là chuyên gia phân loại mã HS Việt Nam. "
-        "Từ danh sách ngắn dưới đây, CHỈ CHỌN MỘT mã HS có sẵn và TRẢ VỀ DUY NHẤT một dòng theo format: HS code: <mã>"
+        "Bạn chỉ được chọn MỘT mã HS nằm trong danh sách ứng viên tôi đưa.\n"
+        "Dùng các chi tiết như độ dày (mm), kích thước, chất liệu, công dụng để phân biệt.\n"
+        "Trả về đúng 1 dòng duy nhất theo format: HS code: <mã>"
     )
 
-    user_prompt = f'Mô tả: "{query}"\n\nỨng viên:\n{context}\n\nTrả về duy nhất:\nHS code: <mã HS trong danh sách>'
+    user_prompt = f"""
+Mô tả hàng hóa: "{query}"
+
+Danh sách ứng viên (rút gọn):
+{context}
+
+Lưu ý: Chỉ chọn 1 mã HS trong danh sách. Trả về DUY NHẤT 1 dòng:
+HS code: <mã>
+"""
 
     try:
         completion = client.chat.completions.create(
@@ -158,152 +303,59 @@ def _call_model_select_hs(query: str, top_candidates: List[Dict]) -> Tuple[Optio
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            temperature=TEMPERATURE,
-            max_tokens=MAX_TOKENS,
+            temperature=0.0,
+            max_tokens=48,
         )
-        output = completion.choices[0].message.content or ""
-        # extract hs
-        m = re.search(r"\b\d{4}(?:\.\d{2}(?:\.\d{2})?)?\b", output)
-        chosen = m.group(0) if m else None
-        return chosen, output
+        model_output = completion.choices[0].message.content or ""
     except RateLimitError:
-        # bubble up to caller for fallback
-        raise
-    except Exception:
-        return None, None
+        return "🚫 Hết giới hạn Groq trong ngày, vui lòng thử lại sau."
+    except Exception as e:
+        # fallback: choose top filtered candidate if exists
+        if filtered:
+            chosen = filtered[0]
+            formatted = format_hs_code(chosen.get("hs_code", ""))
+            return f"HS code: {formatted}"
+        return f"⚠️ Lỗi khi gọi model: {e}"
 
-
-# ---------------------------
-# Main API
-# ---------------------------
-def ask_model_for_hs(query: str, candidate_rows) -> str:
-    """
-    Main function to call from app:
-    - candidate_rows: pandas DataFrame (with columns 'hs_code', 'description', optionally 'ten_hang')
-    Returns multi-line string:
-      HS code: xxxx.xx.xx
-      Các tên hàng khớp trong dữ liệu:
-      - ...
-    """
-    # load cache
-    cache = _load_cache()
-    q_norm = _norm_text(query)
-    q_key = _hash_query(q_norm)
-
-    # 1) if cached exact query -> return immediately
-    if q_key in cache:
-        return cache[q_key]
-
-    # prepare candidates list
-    candidates = candidate_rows.to_dict(orient="records")
-    if not candidates:
-        return "Không tìm được mã HS ứng viên nào."
-
-    # 2) local ranking -> top_k
-    ranked = rank_candidates_by_relevance(query, candidates, top_k=TOP_K)
-    top_candidates = [r for r, score in ranked]
-    top_scores = [score for r, score in ranked]
-
-    # If top candidate is very clearly best (score >> others), we can skip LLM and use it directly.
-    best_score = top_scores[0] if top_scores else 0.0
-    second_score = top_scores[1] if len(top_scores) > 1 else 0.0
-
-    # Heuristic: if best is much better than second OR absolute threshold high, fallback to local
-    if best_score >= 0.92 or (best_score - second_score) >= 0.20 and best_score >= 0.75:
-        chosen_row = top_candidates[0]
-        chosen_digits = re.sub(r"\D", "", str(chosen_row.get("hs_code", "")))
-        # build result
-        formatted_code = format_hs_code(chosen_row.get("hs_code", ""))
-        # names list
-        names = []
-        for row in candidates:
-            if re.sub(r"\D", "", str(row.get("hs_code", ""))) == chosen_digits:
-                n = row.get("ten_hang") or row.get("description")
-                n = str(n).strip()
-                if n and n not in names:
-                    names.append(n)
-        lines = [f"HS code: {formatted_code}"]
-        if names:
-            lines.append("Các tên hàng khớp trong dữ liệu:")
-            for name in names[:8]:
-                lines.append(f"- {name}")
-        result_text = "\n".join(lines)
-        # cache and return
-        cache[q_key] = result_text
-        _save_cache(cache)
-        return result_text
-
-    # 3) Otherwise call LLM with top_candidates only (reduces input tokens a lot)
-    try:
-        chosen_hs_text, model_output = _call_model_select_hs(query, top_candidates)
-    except RateLimitError:
-        # fallback: use best local candidate if rate limited
-        chosen_row = top_candidates[0]
-        chosen_digits = re.sub(r"\D", "", str(chosen_row.get("hs_code", "")))
-        formatted_code = format_hs_code(chosen_row.get("hs_code", ""))
-        names = []
-        for row in candidates:
-            if re.sub(r"\D", "", str(row.get("hs_code", ""))) == chosen_digits:
-                n = row.get("ten_hang") or row.get("description")
-                n = str(n).strip()
-                if n and n not in names:
-                    names.append(n)
-        lines = [f"HS code: {formatted_code}"]
-        if names:
-            lines.append("Các tên hàng khớp trong dữ liệu:")
-            for name in names[:8]:
-                lines.append(f"- {name}")
-        result_text = "\n".join(lines)
-        cache[q_key] = result_text
-        _save_cache(cache)
-        return result_text
-
-    # if model didn't return a valid hs, fallback to best local candidate
-    if not chosen_hs_text:
-        chosen_row = top_candidates[0]
-    else:
-        # find matching rows by digits
-        chosen_digits = re.sub(r"\D", "", chosen_hs_text)
-        matched_rows = [
-            row for row in candidates
-            if re.sub(r"\D", "", str(row.get("hs_code", ""))) == chosen_digits
-        ]
-        if matched_rows:
-            chosen_row = matched_rows[0]
+    chosen_text = _extract_hs_from_output(model_output)
+    if not chosen_text:
+        # fallback to top filtered
+        if filtered:
+            chosen = filtered[0]
         else:
-            # model chose something not found (shouldn't happen) -> fallback
-            chosen_row = top_candidates[0]
+            chosen = candidates[0]
+    else:
+        chosen_digits = re.sub(r"\D", "", chosen_text)
+        # find matching row in llm_candidates
+        chosen = None
+        for r in llm_candidates:
+            if re.sub(r"\D", "", str(r.get("hs_code", ""))) == chosen_digits:
+                chosen = r
+                break
+        if not chosen:
+            # try overall list
+            for r in candidates:
+                if re.sub(r"\D", "", str(r.get("hs_code", ""))) == chosen_digits:
+                    chosen = r
+                    break
+        if not chosen:
+            chosen = filtered[0] if filtered else candidates[0]
 
-    # Build final result (same format)
-    chosen_digits = re.sub(r"\D", "", str(chosen_row.get("hs_code", "")))
-    formatted_code = format_hs_code(chosen_row.get("hs_code", ""))
+    # prepare result display
+    formatted = format_hs_code(chosen.get("hs_code", ""))
+    matched_rows = [r for r in candidates if re.sub(r"\D", "", str(r.get("hs_code", ""))) == re.sub(r"\D", "", str(chosen.get("hs_code", "")))]
+
     names = []
-    for row in candidates:
-        if re.sub(r"\D", "", str(row.get("hs_code", ""))) == chosen_digits:
-            n = row.get("ten_hang") or row.get("description")
-            n = str(n).strip()
-            if n and n not in names:
-                names.append(n)
+    for r in matched_rows:
+        n = r.get("ten_hang") or r.get("description") or ""
+        n = str(n).strip()
+        if n and n not in names:
+            names.append(n)
 
-    result_lines = [f"HS code: {formatted_code}"]
+    lines = [f"HS code: {formatted}"]
     if names:
-        result_lines.append("Các tên hàng khớp trong dữ liệu:")
-        for name in names[:8]:
-            result_lines.append(f"- {name}")
+        lines.append("Các tên hàng khớp trong dữ liệu:")
+        for name in names[:12]:
+            lines.append(f"- {name}")
 
-    result_text = "\n".join(result_lines)
-
-    # Cache result
-    cache[q_key] = result_text
-    # keep cache size bounded (optional): keep latest 2000 entries
-    try:
-        if len(cache) > 2000:
-            # naive trim by keys order isn't LRU but ok for small apps
-            keys = list(cache.keys())[-2000:]
-            new_cache = {k: cache[k] for k in keys}
-            cache = new_cache
-    except Exception:
-        pass
-
-    _save_cache(cache)
-    return result_text
+    return "\n".join(lines)
