@@ -106,40 +106,6 @@ def fetch_caselaw_hierarchy(hs_digits: str) -> dict:
             groups.append(groups_map[code])
 
     return {"chapter": chapter, "groups": groups}
-    """
-    Gọi Caselaw.vn để lấy thông tin phân cấp:
-    {
-        "chapter": "Chương 44 – Gỗ và các mặt hàng bằng gỗ; than từ gỗ",
-        "groups": [
-            "4411 – Ván sợi bằng gỗ hoặc vật liệu có chất gỗ khác...",
-            "44111300 – Loại có chiều dày trên 5mm nhưng không quá 9mm"
-        ]
-    }
-    """
-    url = f"https://caselaw.vn/ket-qua-tra-cuu-ma-hs?query={hs_digits}"
-    try:
-        resp = requests.get(url, timeout=10)
-        resp.raise_for_status()
-    except requests.RequestException as e:
-        print("Lỗi gọi Caselaw:", e)
-        return {"chapter": "", "groups": []}
-
-    soup = BeautifulSoup(resp.text, "html.parser")
-    raw_text = soup.get_text(separator="\n")
-    lines = [ln.strip() for ln in raw_text.splitlines() if ln.strip()]
-
-    chapter = ""
-    groups = []
-
-    for ln in lines:
-        if ln.startswith("Chương"):
-            chapter = ln
-        elif re.match(r"^\d{4}", ln):
-            # dòng mã 4,6,8 số
-            groups.append(ln)
-
-    return {"chapter": chapter, "groups": groups}
-
 
 @app.route("/", methods=["GET", "POST"])
 def index():

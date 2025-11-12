@@ -244,12 +244,10 @@ def build_context_for_llm(candidates: List[Dict]) -> str:
 
 def ask_model_for_hs(query: str, candidate_rows) -> str:
     """
-    Quy trình:
-      1) parse specs từ query
-      2) filter candidates theo specs
-      3) nếu chỉ 1 candidate => chọn deterministic (không gọi LLM)
-      4) nếu >1 => gọi LLM với danh sách đã lọc
+    Optimized version: compact context + top_k candidates + deterministic shortcut by score margin.
+    Keeps original behavior & fallbacks.
     """
+    # convert dataframe->records
     candidates = candidate_rows.to_dict(orient="records")
     if not candidates:
         return "Không tìm được mã HS ứng viên nào."
@@ -261,7 +259,6 @@ def ask_model_for_hs(query: str, candidate_rows) -> str:
     if len(filtered) == 1:
         chosen = filtered[0]
         formatted = format_hs_code(chosen.get("hs_code", ""))
-        # collect names for display
         names = []
         for r in [chosen]:
             n = r.get("ten_hang") or r.get("description") or ""
@@ -275,27 +272,89 @@ def ask_model_for_hs(query: str, candidate_rows) -> str:
                 lines.append(f"- {name}")
         return "\n".join(lines)
 
-    # else, prepare context for LLM using filtered (or original if filtered==original)
-    llm_candidates = filtered if filtered else candidates
-    context = build_context_for_llm(llm_candidates)
+    # --- Scoring top candidates to possibly avoid call ---
+    # compute scores for filtered candidates (use candidate_matches_specs)
+    scored_list = []
+    for row in filtered:
+        matched, score = candidate_matches_specs(row, specs)
+        scored_list.append((score, row))
+    # sort desc
+    scored_list.sort(key=lambda x: x[0], reverse=True)
+    if not scored_list:
+        return "Không tìm được mã HS ứng viên phù hợp."
 
-    system_prompt = (
-        "Bạn là chuyên gia phân loại mã HS Việt Nam. "
-        "Bạn chỉ được chọn MỘT mã HS nằm trong danh sách ứng viên tôi đưa.\n"
-        "Dùng các chi tiết như độ dày (mm), kích thước, chất liệu, công dụng để phân biệt.\n"
-        "Trả về đúng 1 dòng duy nhất theo format: HS code: <mã>"
+    # if top candidate is clearly better than second by margin -> pick deterministically
+    score_margin = 15  # threshold: điều chỉnh nếu muốn
+    top_score = scored_list[0][0]
+    second_score = scored_list[1][0] if len(scored_list) > 1 else -9999
+    if top_score >= second_score + score_margin:
+        chosen = scored_list[0][1]
+        formatted = format_hs_code(chosen.get("hs_code", ""))
+        matched_rows = [r for r in candidates if re.sub(r"\D", "", str(r.get("hs_code", ""))) == re.sub(r"\D", "", str(chosen.get("hs_code", "")))]
+        names = []
+        for r in matched_rows:
+            n = r.get("ten_hang") or r.get("description") or ""
+            n = str(n).strip()
+            if n and n not in names:
+                names.append(n)
+        lines = [f"HS code: {formatted}"]
+        if names:
+            lines.append("Các tên hàng khớp trong dữ liệu:")
+            for name in names[:12]:
+                lines.append(f"- {name}")
+        return "\n".join(lines)
+
+    # --- Build compact context for LLM ---
+    def build_compact_context_for_llm(candidates_list: List[Dict], max_chars_desc: int = 40, top_k: int = 6):
+        top = candidates_list[:top_k]
+        lines = []
+        for i, row in enumerate(top, start=1):
+            hs_raw = re.sub(r"\D", "", str(row.get("hs_code", "")))
+            desc = (row.get("ten_hang") or row.get("description") or "")[:max_chars_desc].replace("\n", " ").strip()
+            text = (row.get("ten_hang") or row.get("description") or "").lower()
+            tags = []
+            for m in ["mdf", "hdf", "plywood", "veneer", "gỗ", "ván"]:
+                if m in text:
+                    tags.append(m)
+            nums = []
+            for m in re.finditer(r"([0-9]+(?:[\.,][0-9]+)?)\s*mm", text):
+                nums.append(m.group(1).replace(",", "."))
+            nums_str = nums[0] if nums else ""
+            tag_str = ",".join(tags) if tags else ""
+            lines.append(f"{i}|HS={hs_raw}|d={desc}|n={nums_str}|t={tag_str}")
+        return "\n".join(lines), top
+
+    def build_specs_summary_local(specs: Dict) -> str:
+        parts = []
+        mats = specs.get("material", [])
+        if mats:
+            parts.append("material:" + ",".join(mats[:3]))
+        th = specs.get("thickness", [])
+        if th:
+            comp, val = th[0]
+            if comp:
+                parts.append(f"thickness:{comp}{val}")
+            else:
+                parts.append(f"thickness:=={val}")
+        kws = specs.get("keywords", [])
+        if kws:
+            parts.append("kw:" + ",".join(kws[:3]))
+        return ";".join(parts)
+
+    context_str, top_candidates = build_compact_context_for_llm([r for s, r in scored_list], max_chars_desc=40, top_k=6)
+    specs_summary = build_specs_summary_local(specs)
+
+    system_prompt = "Bạn là chuyên gia phân loại mã HS Việt Nam. Chỉ chọn 1 mã HS từ danh sách đã cung cấp. Trả 1 dòng: HS code: <mã>"
+
+    user_prompt = (
+        f"Mô tả hàng: \"{query}\"\n"
+        f"Specs: {specs_summary}\n\n"
+        "Danh sách ứng viên (compact):\n"
+        f"{context_str}\n\n"
+        "LƯU Ý: CHỈ CHỌN 1 mã HS từ danh sách trên. Trả DUY NHẤT 1 dòng: HS code: <mã>"
     )
 
-    user_prompt = f"""
-Mô tả hàng hóa: "{query}"
-
-Danh sách ứng viên (rút gọn):
-{context}
-
-Lưu ý: Chỉ chọn 1 mã HS trong danh sách. Trả về DUY NHẤT 1 dòng:
-HS code: <mã>
-"""
-
+    # call LLM (compact prompt -> fewer tokens). keep temp=0 for determinism
     try:
         completion = client.chat.completions.create(
             model=MODEL_NAME,
@@ -304,7 +363,7 @@ HS code: <mã>
                 {"role": "user", "content": user_prompt},
             ],
             temperature=0.0,
-            max_tokens=48,
+            max_tokens=40,
         )
         model_output = completion.choices[0].message.content or ""
     except RateLimitError:
@@ -317,6 +376,7 @@ HS code: <mã>
             return f"HS code: {formatted}"
         return f"⚠️ Lỗi khi gọi model: {e}"
 
+    # parse model output and map back to candidate
     chosen_text = _extract_hs_from_output(model_output)
     if not chosen_text:
         # fallback to top filtered
@@ -326,14 +386,20 @@ HS code: <mã>
             chosen = candidates[0]
     else:
         chosen_digits = re.sub(r"\D", "", chosen_text)
-        # find matching row in llm_candidates
         chosen = None
-        for r in llm_candidates:
+        # search in top candidates first
+        for r in top_candidates:
             if re.sub(r"\D", "", str(r.get("hs_code", ""))) == chosen_digits:
                 chosen = r
                 break
+        # then search in filtered
         if not chosen:
-            # try overall list
+            for r in filtered:
+                if re.sub(r"\D", "", str(r.get("hs_code", ""))) == chosen_digits:
+                    chosen = r
+                    break
+        # finally search in all candidates
+        if not chosen:
             for r in candidates:
                 if re.sub(r"\D", "", str(r.get("hs_code", ""))) == chosen_digits:
                     chosen = r
@@ -341,10 +407,8 @@ HS code: <mã>
         if not chosen:
             chosen = filtered[0] if filtered else candidates[0]
 
-    # prepare result display
     formatted = format_hs_code(chosen.get("hs_code", ""))
     matched_rows = [r for r in candidates if re.sub(r"\D", "", str(r.get("hs_code", ""))) == re.sub(r"\D", "", str(chosen.get("hs_code", "")))]
-
     names = []
     for r in matched_rows:
         n = r.get("ten_hang") or r.get("description") or ""
