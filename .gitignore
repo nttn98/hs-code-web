@@ -1,0 +1,33 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+
+# --- Virtual environment ---
+venv/
+.env
+
+# --- Logs ---
+logs/
+*.log
+
+# --- Runtime / temp files ---
+tempCodeRunnerFile.py
+tempCodeRun*.py
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+
+# --- IDE / Editor ---
+.vscode/
+.idea/
+
+# --- Testing / Coverage ---
+.pytest_cache/
+.coverage
+htmlcov/
+
+# --- Build ---
+build/
+dist/
+*.egg-info/
