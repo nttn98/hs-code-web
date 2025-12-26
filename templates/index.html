@@ -2,223 +2,338 @@
 <html lang="vi">
   <head>
     <meta charset="UTF-8" />
-    <title>HS Code Finder</title>
-    <style>
-      * {
-        box-sizing: border-box;
-      }
-      body {
-        margin: 0;
-        font-family: "Segoe UI", Arial, sans-serif;
-        background: #eef1f5;
-        height: 100vh;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        overflow: hidden;
-      }
-      .container {
-        width: 860px;
-        max-width: 95%;
-        height: 90vh;
-        max-height: 640px;
-        background: #fff;
-        border-radius: 12px;
-        box-shadow: 0 3px 14px rgba(0, 0, 0, 0.08);
-        padding: 22px 26px;
-        display: flex;
-        flex-direction: column;
-        justify-content: space-between;
-      }
-      h1 {
-        text-align: center;
-        margin: 0;
-        font-size: 23px;
-        color: #2a2a2a;
-        letter-spacing: 0.5px;
-      }
-      form {
-        margin-top: 10px;
-        display: flex;
-        flex-direction: column;
-        gap: 10px;
-      }
-      label {
-        font-weight: 600;
-        color: #333;
-        font-size: 14px;
-      }
-      textarea {
-        width: 100%;
-        height: 100px;
-        padding: 10px;
-        border: 1px solid #ccc;
-        border-radius: 6px;
-        font-size: 14px;
-        resize: none;
-        line-height: 1.5;
-        transition: border-color 0.2s;
-      }
-      textarea:focus {
-        border-color: #007bff;
-        outline: none;
-      }
-      button {
-        align-self: flex-start;
-        padding: 9px 18px;
-        background: #007bff;
-        color: #fff;
-        border: none;
-        border-radius: 6px;
-        cursor: pointer;
-        font-size: 14px;
-        transition: background 0.2s;
-      }
-      button:hover {
-        background: #0062d9;
-      }
-      .result-box {
-        flex: 1;
-        background: #fafafa;
-        border: 1px solid #ddd;
-        border-radius: 8px;
-        display: flex;
-        flex-direction: column;
-        padding: 16px 18px;
-        overflow: auto;
-        margin-top: 10px;
-      }
-      .result-title {
-        font-weight: 600;
-        color: #333;
-        margin-bottom: 10px;
-        font-size: 15px;
-        text-transform: uppercase;
-        letter-spacing: 0.4px;
-      }
-      .hs-line {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        margin-bottom: 12px;
-        flex-wrap: wrap;
-      }
-      .hs-label {
-        font-weight: bold;
-        color: #007bff;
-        font-size: 15px;
-      }
-      .hs-code {
-        font-size: 22px;
-        font-weight: 700;
-        color: #007bff;
-        background: #e8f1ff;
-        padding: 4px 12px;
-        border-radius: 6px;
-        letter-spacing: 1px;
-      }
-      .chapter-block {
-        margin-bottom: 10px;
-        padding: 8px;
-        border-radius: 6px;
-        background: #ffffff;
-        border: 1px solid #f0f0f0;
-      }
-      .chapter-title {
-        margin: 0 0 6px 0;
-        font-size: 14px;
-        color: #b71c1c;
-        font-weight: 700;
-      }
-      .caselaw-groups {
-        margin: 6px 0 10px 18px;
-        padding: 0;
-        list-style: none;
-      }
-      .caselaw-groups li {
-        font-size: 13px;
-        color: #003366;
-        margin: 3px 0;
-        padding: 6px 10px;
-        background: #f0f6ff;
-        border-radius: 5px;
-        border-left: 3px solid #007bff;
-      }
-      .placeholder {
-        color: #777;
-        font-size: 14px;
-        margin-top: 20px;
-      }
-      .note {
-        flex-shrink: 0;
-        background: #fffdfd;
-        text-align: right;
-        font-size: 11.5px;
-        color: #666;
-        padding: 6px 10px;
-        border-top: 1px solid #ddd;
-        border-radius: 0 0 8px 8px;
-      }
-    </style>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>HS Code + AI Chat</title>
+    <link
+      rel="stylesheet"
+      href="{{ url_for('static', filename='styles.css') }}"
+    />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
   </head>
   <body>
     <div class="container">
-      <h1>HS Code Finder</h1>
-      <form method="post" id="hsForm">
-        <label for="description">Mô tả hàng hóa:</label>
-        <textarea
-          id="description"
-          name="description"
-          placeholder="Ví dụ: Ván MDF có chiều dày 4mm..."
-        >
-{{ user_query }}</textarea
-        >
-        <button type="submit">Tìm HS code</button>
-      </form>
+      <!-- LEFT PANEL -->
+      <div class="panel left-panel">
+        <header>
+          <h1>🔍 TRA CỨU MÃ HS AI</h1>
+          <p class="subtitle">Tìm kiếm thông minh & Phân cấp Caselaw</p>
+        </header>
 
-      <div class="result-box">
-        <div class="result-content">
-          <div class="result-title">Kết quả gợi ý</div>
+        <div class="search-area">
+          <div class="input-wrapper">
+            <input
+              type="text"
+              id="query"
+              placeholder="Nhập tên sản phẩm (VD: thịt bò đông lạnh...)"
+              onkeypress="if(event.key==='Enter') handleSearch()"
+            />
+            <button onclick="handleSearch()" id="searchBtn">TÌM KIẾM</button>
+          </div>
 
-          {% if hs_data_list %} {% for hs_data in hs_data_list %}
-          <div class="hs-line">
-            <span class="hs-label">HS code:</span>
-            <span class="hs-code">{{ hs_data.code }}</span>
+          <div id="loading" class="loading-spinner hidden">
+            <div class="spinner"></div>
+            <span>AI đang phân tích dữ liệu...</span>
           </div>
-          <div class="chapters" style="margin-top: 10px">
-            <div class="chapter-block">
-              <div class="chapter-title">{{ hs_data.chapter }}</div>
-              {% if hs_data.groups %}
-              <ul class="caselaw-groups">
-                {% for g in hs_data.groups %}
-                <li>{{ g }}</li>
-                {% endfor %}
-              </ul>
-              {% else %}
-              <div class="no-groups">Không có nhóm cho chương này.</div>
-              {% endif %}
-            </div>
-          </div>
-          {% endfor %} {% else %}
-          <div class="placeholder">
-            Không tìm thấy HS code nào. Vui lòng thử lại với mô tả khác.
-          </div>
-          {% endif %}
+        </div>
 
-          <div class="note">
-            Gợi ý tự động — vui lòng đối chiếu lại với Biểu thuế VN
+        <div id="resultCard" class="result-card hidden">
+          <div class="ai-result-section">
+            <div class="hs-badge">KẾT QUẢ DỰ ĐOÁN</div>
+            <h2 id="resHsCode"></h2>
           </div>
+
+          <div class="caselaw-section">
+            <h3>📋 Phân cấp biểu thuế</h3>
+            <div id="hierarchyContent" class="hierarchy-tree"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- RIGHT PANEL -->
+      <div class="panel right-panel">
+        <div class="chat-header">Chat chuyên gia hải quan</div>
+
+        <div id="chatBox" class="chat-box">
+          <div class="empty-state">
+            <p>Xin chào! Tôi có thể giúp gì cho bạn về hải quan?</p>
+          </div>
+        </div>
+
+        <div class="chat-input-wrapper">
+          <input
+            type="text"
+            id="chatInput"
+            placeholder="Nhập câu hỏi của bạn..."
+            onkeypress="if(event.key==='Enter') sendChat()"
+          />
+          <button onclick="sendChat()">Gửi</button>
         </div>
       </div>
     </div>
 
+    <!-- Custom Popup Modal -->
+    <div id="customPopup" class="popup-overlay hidden">
+      <div class="popup-content">
+        <div class="popup-icon" id="popupIcon"></div>
+        <h3 id="popupTitle"></h3>
+        <p id="popupMessage"></p>
+        <button onclick="closePopup()" class="popup-btn">Đóng</button>
+      </div>
+    </div>
+
     <script>
-      const textarea = document.getElementById("description");
-      const form = document.getElementById("hsForm");
-      textarea.addEventListener("keydown", function (e) {
-        if (e.key === "Enter" && !e.shiftKey) {
-          e.preventDefault();
-          form.submit();
+      // ==================== POPUP FUNCTIONS ====================
+      function showPopup(title, message, type = "info") {
+        const popup = document.getElementById("customPopup");
+        const icon = document.getElementById("popupIcon");
+        const titleEl = document.getElementById("popupTitle");
+        const messageEl = document.getElementById("popupMessage");
+
+        // Set icon based on type
+        const icons = {
+          success: "✅",
+          error: "❌",
+          warning: "⚠️",
+          info: "ℹ️",
+        };
+
+        icon.textContent = icons[type] || icons["info"];
+        titleEl.textContent = title;
+        messageEl.textContent = message;
+
+        popup.classList.remove("hidden");
+
+        // Auto close after 5 seconds for success messages
+        if (type === "success") {
+          setTimeout(closePopup, 5000);
+        }
+      }
+
+      function closePopup() {
+        document.getElementById("customPopup").classList.add("hidden");
+      }
+
+      // ==================== VALIDATION FUNCTIONS ====================
+      function validateSearchInput(value) {
+        const errors = [];
+
+        if (!value || value.trim().length === 0) {
+          errors.push("Vui lòng nhập tên sản phẩm");
+        } else if (value.trim().length < 3) {
+          errors.push("Tên sản phẩm phải có ít nhất 3 ký tự");
+        } else if (value.trim().length > 200) {
+          errors.push("Tên sản phẩm không được quá 200 ký tự");
+        }
+
+        // Check for special characters that might cause issues
+        const dangerousChars = /[<>{}]/;
+        if (dangerousChars.test(value)) {
+          errors.push("Tên sản phẩm không được chứa ký tự đặc biệt < > { }");
+        }
+
+        return errors;
+      }
+
+      function validateChatInput(value) {
+        const errors = [];
+
+        if (!value || value.trim().length === 0) {
+          return errors; // Empty is OK for chat, just don't send
+        }
+
+        if (value.trim().length > 1000) {
+          errors.push("Tin nhắn không được quá 1000 ký tự");
+        }
+
+        return errors;
+      }
+
+      function showInputError(inputId, message) {
+        const input = document.getElementById(inputId);
+        input.classList.add("input-error");
+
+        // Remove error class after 3 seconds
+        setTimeout(() => {
+          input.classList.remove("input-error");
+        }, 3000);
+
+        showPopup("Lỗi nhập liệu", message, "warning");
+      }
+
+      // ==================== SEARCH FUNCTION ====================
+      async function handleSearch() {
+        const queryVal = document.getElementById("query").value.trim();
+        const btn = document.getElementById("searchBtn");
+        const loading = document.getElementById("loading");
+        const card = document.getElementById("resultCard");
+
+        // Validation
+        const validationErrors = validateSearchInput(queryVal);
+        if (validationErrors.length > 0) {
+          showInputError("query", validationErrors.join(". "));
+          return;
+        }
+
+        // Update button text to show loading
+        const originalBtnText = btn.textContent;
+        btn.textContent = "Đang tìm...";
+        btn.disabled = true;
+        loading.classList.remove("hidden");
+        card.classList.add("hidden");
+
+        try {
+          const response = await fetch("/search", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ query: queryVal }),
+          });
+
+          const data = await response.json();
+
+          if (response.ok) {
+            document.getElementById("resHsCode").innerText = data.hs_code;
+
+            const hierarchyDiv = document.getElementById("hierarchyContent");
+            hierarchyDiv.innerHTML = "";
+
+            if (data.caselaw && data.caselaw.chapter) {
+              let html = `<div class="chapter-node">${data.caselaw.chapter}</div><ul class="tree-list">`;
+              const groups =
+                data.caselaw.chapter_groups[data.caselaw.chapter] || [];
+              groups.forEach((item) => {
+                const isMatch = item.includes(data.hs_code);
+                html += `<li class="${
+                  isMatch ? "match-item" : ""
+                }">${item}</li>`;
+              });
+              html += `</ul>`;
+              hierarchyDiv.innerHTML = html;
+            } else {
+              hierarchyDiv.innerHTML =
+                "<p class='no-data'>Không có dữ liệu phân cấp từ Caselaw.</p>";
+            }
+
+            card.classList.remove("hidden");
+          } else {
+            showPopup(
+              "Lỗi tìm kiếm",
+              data.error || "Không thể tìm thấy kết quả",
+              "error"
+            );
+          }
+        } catch (err) {
+          console.error(err);
+          showPopup(
+            "Lỗi kết nối",
+            "Không thể kết nối đến server. Vui lòng thử lại sau.",
+            "error"
+          );
+        } finally {
+          btn.disabled = false;
+          btn.textContent = originalBtnText;
+          loading.classList.add("hidden");
+        }
+      }
+
+      // ==================== CHAT FUNCTIONS ====================
+      function addMessage(text, type) {
+        const chatBox = document.getElementById("chatBox");
+
+        // Remove empty state if exists
+        const emptyState = chatBox.querySelector(".empty-state");
+        if (emptyState) {
+          emptyState.remove();
+        }
+
+        const div = document.createElement("div");
+        div.className = `chat-bubble ${type}`;
+        div.innerText = text;
+        chatBox.appendChild(div);
+        chatBox.scrollTop = chatBox.scrollHeight;
+      }
+
+      function addTypingIndicator() {
+        const chatBox = document.getElementById("chatBox");
+        const typing = document.createElement("div");
+        typing.className = "chat-bubble bot typing-indicator";
+        typing.id = "typingIndicator";
+        typing.innerHTML = "<span></span><span></span><span></span>";
+        chatBox.appendChild(typing);
+        chatBox.scrollTop = chatBox.scrollHeight;
+      }
+
+      function removeTypingIndicator() {
+        const typing = document.getElementById("typingIndicator");
+        if (typing) {
+          typing.remove();
+        }
+      }
+
+      async function sendChat(messageFromClick = null) {
+        const input = document.getElementById("chatInput");
+        const msg = messageFromClick || input.value.trim();
+
+        if (!msg) return;
+
+        // Validation
+        const validationErrors = validateChatInput(msg);
+        if (validationErrors.length > 0) {
+          showInputError("chatInput", validationErrors.join(". "));
+          return;
+        }
+
+        if (!messageFromClick) addMessage(msg, "user");
+        input.value = "";
+
+        // Show typing indicator
+        addTypingIndicator();
+
+        try {
+          const res = await fetch("/chat", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ message: msg }),
+          });
+
+          if (!res.ok) {
+            throw new Error("Server error");
+          }
+
+          const data = await res.json();
+
+          // Remove typing indicator before showing response
+          removeTypingIndicator();
+
+          addMessage(data.answer, "bot");
+        } catch (err) {
+          console.error(err);
+          removeTypingIndicator();
+          addMessage("Xin lỗi, đã có lỗi xảy ra. Vui lòng thử lại.", "bot");
+          showPopup(
+            "Lỗi chat",
+            "Không thể gửi tin nhắn. Vui lòng thử lại.",
+            "error"
+          );
+        }
+      }
+
+      // ==================== EVENT LISTENERS ====================
+      // Close popup when clicking outside
+      document
+        .getElementById("customPopup")
+        .addEventListener("click", function (e) {
+          if (e.target === this) {
+            closePopup();
+          }
+        });
+
+      // Escape key to close popup
+      document.addEventListener("keydown", function (e) {
+        if (e.key === "Escape") {
+          closePopup();
         }
       });
     </script>

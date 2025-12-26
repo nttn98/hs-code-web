@@ -1,5 +1,6 @@
-Flask 
-requests 
-beautifulsoup4 
-groq 
-python-dotenv 
+flask
+requests
+python-dotenv
+groq
+beautifulsoup4
+flask-cors
