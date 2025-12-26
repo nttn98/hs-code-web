@@ -1,6 +1,7 @@
 import json
 import re
 import os
+import unicodedata
 import requests
 from dotenv import load_dotenv
 from groq import Groq
@@ -12,91 +13,122 @@ from customs_advisor_chat import customs_advisor_chat
 
 app = Flask(__name__)
 
-# --- CONFIG ---
+# ================= CONFIG =================
 load_dotenv()
-JSON_PATH = os.getenv("JSON_PATH")  # path tới file output.json
+JSON_PATH = os.getenv("JSON_PATH")
 MODEL_AI = os.getenv("MODEL_AI")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+
 client = Groq(api_key=GROQ_API_KEY)
 
-# --- TOKENIZE ---
-def get_tokens(text):
+# ================= TEXT NORMALIZE =================
+def remove_accent_vi(text: str) -> str:
     if not text:
-        return set()
-    text = text.lower()
-    text = re.sub(r"\([^)]*\)", " ", text)
-    text = re.sub(r"[^\wàáảãạâầấẩẫậăằắẳẵặèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđ ]"," ",text)
-    return set(re.findall(r"\b[a-zàáảãạâầấẩẫậăằắẳẵặèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđ0-9]{2,}\b", text))
+        return ""
+    return "".join(
+        c for c in unicodedata.normalize("NFD", text)
+        if unicodedata.category(c) != "Mn"
+    )
 
-# --- LOAD JSON DB ---
-def load_hs_database(json_path):
-    if not os.path.exists(json_path):
-        return []
-    with open(json_path, "r", encoding="utf-8") as f:
+def normalize(text: str, remove_accent=False) -> str:
+    if not text:
+        return ""
+    text = text.lower()
+    if remove_accent:
+        text = remove_accent_vi(text)
+
+    text = re.sub(r"\([^)]*\)", " ", text)
+    text = re.sub(r"[^\w\s]", " ", text)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
+def get_tokens(text: str, remove_accent=False) -> set:
+    return set(normalize(text, remove_accent).split())
+
+# ================= LOAD JSON DB =================
+def load_hs_database(path):
+    if not path or not os.path.exists(path):
+        raise RuntimeError("JSON_PATH không tồn tại")
+
+    with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
+
     for row in data:
-        row["tokens"] = get_tokens(" ".join([row.get("ten_hang",""), row.get("hs_code","")]))
+        name = row.get("ten_hang", "")
+        row["name_norm"] = normalize(name)
+        row["name_ascii"] = normalize(name, remove_accent=True)
+        row["tokens"] = get_tokens(name)
+        row["tokens_ascii"] = get_tokens(name, remove_accent=True)
+
     return data
 
-# --- SEARCH CANDIDATES ---
-def search_candidates(db, query, limit=200):
+db = load_hs_database(JSON_PATH)
+
+# ================= SEARCH ENGINE =================
+def search_candidates(db, query, limit=50):
+    q_norm = normalize(query)
+    q_ascii = normalize(query, remove_accent=True)
     q_tokens = get_tokens(query)
-    if not q_tokens:
-        return []
+    q_tokens_ascii = get_tokens(query, remove_accent=True)
+
     scored = []
+
     for row in db:
-        tokens = row.get("tokens", set())
-        common = q_tokens & tokens
-        if not common:
-            continue
-        score = len(common)*15 + int(len(common)/max(len(q_tokens),1)*50)
-        if q_tokens.issubset(tokens):
-            score += 120
-        scored.append((score,row))
+        score = 0
+
+        # token match có dấu
+        score += len(q_tokens & row["tokens"]) * 40
+
+        # token match không dấu
+        score += len(q_tokens_ascii & row["tokens_ascii"]) * 30
+
+        # phrase match
+        if q_norm and q_norm in row["name_norm"]:
+            score += 200
+        if q_ascii and q_ascii in row["name_ascii"]:
+            score += 250
+
+        if score > 0:
+            scored.append((score, row))
+
     scored.sort(key=lambda x: x[0], reverse=True)
     return [r for _, r in scored[:limit]]
 
-# --- PICK HS TOP 1 ---
-def pick_hs_code(query, candidates):
-    if candidates:
-        return {"hs": candidates[0]["hs_code"], "reason": "Top 1 candidate fallback"}
-    return None
-
-# --- AI PICK HS CODE ---
-def ask_ai_for_hs_code(query, candidates):
-    ctx = [{"hs_code": r.get("hs_code"), "ten_hang": r.get("ten_hang"), "chinh_sach": r.get("chinh_sach","")} 
-           for r in candidates]
+# ================= AI QUERY EXPANSION =================
+def ai_expand_query(query):
+    """
+    AI chỉ sinh keyword liên quan
+    KHÔNG sinh HS
+    """
     prompt = f"""
-Mô tả hàng hóa: {query}
+Người dùng nhập: "{query}"
 
-Danh sách mã HS tham khảo:
-{json.dumps(ctx[:50], ensure_ascii=False)}
+Sinh tối đa 5 cụm từ mô tả tương đương (tiếng Việt)
+để tìm trong database hàng hóa.
 
-Yêu cầu:
-- Chọn 1 mã HS 8 số phù hợp nhất
-- Dựa trên bản chất vật lý và công dụng chính
-- Chỉ trả về JSON dạng: {{"hs": "....", "reason": "..."}}
-- Nếu không tìm được HS, chọn candidate top 1
+Chỉ trả JSON:
+{{"keywords": ["...","..."]}}
 """
     try:
         res = client.chat.completions.create(
             model=MODEL_AI,
-            messages=[{"role":"user","content":prompt}]
+            messages=[{"role": "user", "content": prompt}]
         )
-        content = res.choices[0].message.content.strip()
-        try:
-            data = json.loads(content)
-            data["hs"] = re.sub(r"\D","",data.get("hs",""))
-            if not data["hs"] and candidates:
-                data["hs"] = candidates[0]["hs_code"]
-                data["reason"] = "Fallback top 1"
-            return data
-        except:
-            return {"hs": candidates[0]["hs_code"] if candidates else "N/A", "reason": content}
-    except Exception as e:
-        return {"hs": "N/A", "reason": str(e)}
+        data = json.loads(res.choices[0].message.content)
+        return data.get("keywords", [])
+    except:
+        return []
 
-# --- CASELAW ---
+# ================= PICK HS =================
+def pick_hs_code(candidates):
+    if not candidates:
+        return None
+    return {
+        "hs": candidates[0]["hs_code"],
+        "reason": "Matched by normalized tokens / phrase"
+    }
+
+# ================= CASELAW (OPTIONAL) =================
 def fetch_caselaw_hierarchy(hs_code):
     if not hs_code:
         return {"chapter": "", "chapter_groups": {}}
@@ -167,7 +199,7 @@ def is_valid_query(query, db, min_tokens=1):
 # --- LOAD DB ---
 db = load_hs_database(JSON_PATH)
 
-# --- ROUTES ---
+# ================= ROUTES =================
 @app.route("/")
 def index():
     return render_template("index.html")
@@ -176,33 +208,43 @@ def index():
 def search():
     data = request.get_json(force=True)
     query = (data.get("query") or "").strip()
-    if not query:
-        return jsonify({"error": "Thiếu mô tả hàng hóa"}), 400
 
     if not is_valid_query(query, db):
         return jsonify({"error": "Mô tả hàng hóa không hợp lệ hoặc không tìm thấy kết quả"}), 400
 
+    # 1️⃣ search trực tiếp
     candidates = search_candidates(db, query)
-    hs_res = pick_hs_code(query, candidates)
 
-    if not hs_res:
-        hs_res = ask_ai_for_hs_code(query, db)
+    # 2️⃣ nếu yếu → AI mở rộng query
+    if not candidates or len(candidates) < 3:
+        for kw in ai_expand_query(query):
+            candidates.extend(search_candidates(db, kw))
 
-    hs_final = hs_res.get("hs")
-    policy = next((c.get("chinh_sach","") for c in candidates if c.get("hs_code")==hs_final), "")
+    if not candidates:
+        return jsonify({"error": "Không tìm thấy HS phù hợp"}), 404
+
+    hs_res = pick_hs_code(candidates)
+    hs_code = hs_res["hs"]
+
+    policy = next(
+        (c.get("chinh_sach", "") for c in candidates if c["hs_code"] == hs_code),
+        ""
+    )
 
     return jsonify({
-        "hs_code": hs_final,
-        "reason": hs_res.get("reason"),
+        "hs_code": hs_code,
+        "reason": hs_res["reason"],
         "policy": policy,
-        "caselaw": fetch_caselaw_hierarchy(hs_final)
+        "caselaw": fetch_caselaw_hierarchy(hs_code)
     })
 
 @app.route("/chat", methods=["POST"])
 def chat():
     data = request.get_json(force=True)
-    msg = data.get("message")
-    return jsonify({"answer": customs_advisor_chat(msg)})
+    return jsonify({
+        "answer": customs_advisor_chat(data.get("message"))
+    })
 
+# ================= MAIN =================
 if __name__ == "__main__":
     app.run(debug=True)
