@@ -3,11 +3,11 @@ import re
 import os
 import unicodedata
 import requests
+from urllib.parse import quote_plus
+from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from groq import Groq
 from flask import Flask, render_template, request, jsonify
-from urllib.parse import quote_plus
-from bs4 import BeautifulSoup
 
 from customs_advisor_chat import customs_advisor_chat
 
@@ -15,120 +15,176 @@ app = Flask(__name__)
 
 # ================= CONFIG =================
 load_dotenv()
-JSON_PATH = os.getenv("JSON_PATH")
+JSON_PATH = os.getenv("JSON_PATH")            # output.json
+JSON_GLOBAL = os.getenv("JSON_GLOBAL")        # global.json
 MODEL_AI = os.getenv("MODEL_AI")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 client = Groq(api_key=GROQ_API_KEY)
 
 # ================= TEXT NORMALIZE =================
-def remove_accent_vi(text: str) -> str:
-    if not text:
-        return ""
-    return "".join(
-        c for c in unicodedata.normalize("NFD", text)
-        if unicodedata.category(c) != "Mn"
-    )
+STOPWORDS = {
+    "va", "và", "loai", "loại", "dung", "dùng", "de", "để",
+    "bang", "bằng", "trong", "cho", "tu", "từ"
+}
 
-def normalize(text: str, remove_accent=False) -> str:
+def normalize(text: str) -> str:
     if not text:
         return ""
+    text = unicodedata.normalize("NFD", text)
+    text = "".join(c for c in text if unicodedata.category(c) != "Mn")
     text = text.lower()
-    if remove_accent:
-        text = remove_accent_vi(text)
-
     text = re.sub(r"\([^)]*\)", " ", text)
     text = re.sub(r"[^\w\s]", " ", text)
     text = re.sub(r"\s+", " ", text)
     return text.strip()
 
-def get_tokens(text: str, remove_accent=False) -> set:
-    return set(normalize(text, remove_accent).split())
-
-# ================= LOAD JSON DB =================
-def load_hs_database(path):
-    if not path or not os.path.exists(path):
-        raise RuntimeError("JSON_PATH không tồn tại")
-
-    with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-
-    for row in data:
-        name = row.get("ten_hang", "")
-        row["name_norm"] = normalize(name)
-        row["name_ascii"] = normalize(name, remove_accent=True)
-        row["tokens"] = get_tokens(name)
-        row["tokens_ascii"] = get_tokens(name, remove_accent=True)
-
-    return data
-
-db = load_hs_database(JSON_PATH)
-
-# ================= SEARCH ENGINE =================
-def search_candidates(db, query, limit=50):
-    q_norm = normalize(query)
-    q_ascii = normalize(query, remove_accent=True)
-    q_tokens = get_tokens(query)
-    q_tokens_ascii = get_tokens(query, remove_accent=True)
-
-    scored = []
-
-    for row in db:
-        score = 0
-
-        # token match có dấu
-        score += len(q_tokens & row["tokens"]) * 40
-
-        # token match không dấu
-        score += len(q_tokens_ascii & row["tokens_ascii"]) * 30
-
-        # phrase match
-        if q_norm and q_norm in row["name_norm"]:
-            score += 200
-        if q_ascii and q_ascii in row["name_ascii"]:
-            score += 250
-
-        if score > 0:
-            scored.append((score, row))
-
-    scored.sort(key=lambda x: x[0], reverse=True)
-    return [r for _, r in scored[:limit]]
-
-# ================= AI QUERY EXPANSION =================
-def ai_expand_query(query):
-    """
-    AI chỉ sinh keyword liên quan
-    KHÔNG sinh HS
-    """
-    prompt = f"""
-Người dùng nhập: "{query}"
-
-Sinh tối đa 5 cụm từ mô tả tương đương (tiếng Việt)
-để tìm trong database hàng hóa.
-
-Chỉ trả JSON:
-{{"keywords": ["...","..."]}}
-"""
-    try:
-        res = client.chat.completions.create(
-            model=MODEL_AI,
-            messages=[{"role": "user", "content": prompt}]
-        )
-        data = json.loads(res.choices[0].message.content)
-        return data.get("keywords", [])
-    except:
-        return []
-
-# ================= PICK HS =================
-def pick_hs_code(candidates):
-    if not candidates:
-        return None
+def get_tokens(text: str) -> set:
     return {
-        "hs": candidates[0]["hs_code"],
-        "reason": "Matched by normalized tokens / phrase"
+        t for t in normalize(text).split()
+        if len(t) > 1 and t not in STOPWORDS
     }
 
-# ================= CASELAW (OPTIONAL) =================
+# ================= LOAD OUTPUT.JSON =================
+def load_output_db(path):
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    for r in data:
+        norm = normalize(r.get("ten_hang", ""))
+        r["_norm"] = norm
+        r["_tokens"] = get_tokens(norm)
+    return data
+
+# ================= LOAD GLOBAL.JSON =================
+def load_global_db(path):
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)["roots"]
+
+output_db = load_output_db(JSON_PATH)
+global_roots = load_global_db(JSON_GLOBAL)
+
+# ================= SEARCH OUTPUT.JSON =================
+def search_output_db(db, query):
+    q_norm = normalize(query)
+    q_tokens = get_tokens(query)
+
+    if len(q_tokens) < 2:
+        return None
+
+    best = None
+    best_score = 0
+
+    for r in db:
+        common = q_tokens & r["_tokens"]
+        if not common:
+            continue
+
+        score = len(common) * 50
+
+        if q_norm in r["_norm"]:
+            score += 300
+
+        coverage = len(common) / len(q_tokens)
+        score += int(coverage * 100)
+
+        if score > best_score:
+            best_score = score
+            best = r
+
+    return best if best_score >= 180 else None
+
+# ================= GLOBAL HELPERS =================
+def collect_leaves(roots):
+    leaves = []
+    for r in roots:
+        for leaf in r.get("leaf", []):
+            leaves.append({
+                "code": leaf["code"],
+                "name": leaf["name"],
+                "description": r.get("description", ""),
+                "group1": leaf.get("group1", [])
+            })
+    return leaves
+
+def filter_leaves_by_state(leaves, query):
+    q_tokens = get_tokens(query)
+    if not q_tokens:
+        return []
+
+    filtered = []
+    for l in leaves:
+        text = f"{l['name']} {l['description']}"
+        tokens = get_tokens(text)
+        if q_tokens & tokens:
+            filtered.append(l)
+
+    return filtered
+
+# ================= AI HELPERS =================
+def safe_ai_json(text):
+    try:
+        return json.loads(text)
+    except Exception:
+        return {}
+
+def ai_pick_leaf(query, leaves):
+    ctx = [{"code": l["code"], "name": l["name"]} for l in leaves]
+
+    prompt = f"""
+Mô tả hàng hóa: "{query}"
+
+Danh sách nhóm HS:
+{json.dumps(ctx, ensure_ascii=False)}
+
+Chọn 1 nhóm PHÙ HỢP NHẤT.
+KHÔNG sinh mã mới.
+
+Trả JSON:
+{{"code": "..."}}
+"""
+    res = client.chat.completions.create(
+        model=MODEL_AI,
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0
+    )
+
+    return safe_ai_json(res.choices[0].message.content).get("code")
+
+def ai_pick_group(query, groups):
+    ctx = [{"name": g["name"]} for g in groups]
+
+    prompt = f"""
+Mô tả hàng hóa: "{query}"
+
+Danh sách phân nhóm:
+{json.dumps(ctx, ensure_ascii=False)}
+
+Chọn 1 phân nhóm PHÙ HỢP NHẤT.
+Trả JSON:
+{{"name": "..."}}
+"""
+    res = client.chat.completions.create(
+        model=MODEL_AI,
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0
+    )
+
+    return normalize(
+        safe_ai_json(res.choices[0].message.content).get("name", "")
+    )
+
+def pick_final_hs(group):
+    children = group.get("children", [])
+    if not children:
+        return group.get("code")
+
+    for c in children:
+        if "loại khác" in normalize(c["name"]):
+            return c["code"]
+
+    return children[-1]["code"]
+
+# ================= CASELAW FETCH (ADD – KHÔNG ĐỔI LOGIC) =================
 def fetch_caselaw_hierarchy(hs_code):
     if not hs_code:
         return {"chapter": "", "chapter_groups": {}}
@@ -178,71 +234,86 @@ def fetch_caselaw_hierarchy(hs_code):
             chapter_groups[current_ch].append(label)
     return {"chapter": chapters[0] if chapters else "", "chapter_groups": chapter_groups}
 
-def is_valid_query(query, db, min_tokens=1):
-    """
-    Kiểm tra query có hợp lệ hay không
-    - min_tokens: số token trùng với database tối thiểu
-    """
-    q_tokens = get_tokens(query)
-    if not q_tokens or len(query.strip()) < 3:
-        return False
-
-    # kiểm tra trùng token với database
-    matched = 0
-    for row in db:
-        tokens = row.get("tokens", set())
-        if q_tokens & tokens:
-            matched += 1
-            break
-    return matched >= min_tokens
-
-# --- LOAD DB ---
-db = load_hs_database(JSON_PATH)
-
 # ================= ROUTES =================
-@app.route("/")
+def rank_leaves(leaves, query, limit=12):
+    q_tokens = get_tokens(query)
+    scored = []
+
+    for l in leaves:
+        text = f"{l['name']} {l['description']}"
+        tokens = get_tokens(text)
+        score = len(q_tokens & tokens)
+        if score > 0:
+            scored.append((score, l))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [l for _, l in scored[:limit]]
+
+@app.route("/", methods=["GET"])
 def index():
     return render_template("index.html")
 
 @app.route("/search", methods=["POST"])
 def search():
-    data = request.get_json(force=True)
-    query = (data.get("query") or "").strip()
+    query = (request.get_json(force=True).get("query") or "").strip()
 
-    if not is_valid_query(query, db):
-        return jsonify({"error": "Mô tả hàng hóa không hợp lệ hoặc không tìm thấy kết quả"}), 400
+    # STEP 1: output.json
+    res = search_output_db(output_db, query)
+    if res:
+        caselaw = fetch_caselaw_hierarchy(res["hs_code"])
+        return jsonify({
+            "source": "output.json",
+            "hs_code": res["hs_code"],
+            "ten_hang": res["ten_hang"],
+            "caselaw": caselaw
+        })
 
-    # 1️⃣ search trực tiếp
-    candidates = search_candidates(db, query)
+    # STEP 2: global.json
+    leaves = collect_leaves(global_roots)
+    leaves = filter_leaves_by_state(leaves, query)
 
-    # 2️⃣ nếu yếu → AI mở rộng query
-    if not candidates or len(candidates) < 3:
-        for kw in ai_expand_query(query):
-            candidates.extend(search_candidates(db, kw))
+    if not leaves:
+        return jsonify({"error": "Không xác định được nhóm HS"}), 404
 
-    if not candidates:
-        return jsonify({"error": "Không tìm thấy HS phù hợp"}), 404
+    leaves = rank_leaves(leaves, query, limit=10)
 
-    hs_res = pick_hs_code(candidates)
-    hs_code = hs_res["hs"]
+    leaf_code = ai_pick_leaf(query, leaves)
+    leaf = next((l for l in leaves if l["code"] == leaf_code), leaves[0])
 
-    policy = next(
-        (c.get("chinh_sach", "") for c in candidates if c["hs_code"] == hs_code),
-        ""
+    groups = leaf.get("group1", [])
+    if not groups:
+        caselaw = fetch_caselaw_hierarchy(leaf["code"])
+        return jsonify({
+            "source": "global.json",
+            "hs_code": leaf["code"],
+            "leaf": leaf["code"],
+            "caselaw": caselaw
+        })
+
+    group_name = ai_pick_group(query, groups)
+    group = next(
+        (g for g in groups if normalize(g["name"]) == group_name),
+        groups[0]
     )
 
+    hs_final = pick_final_hs(group)
+
+    caselaw = fetch_caselaw_hierarchy(hs_final)
+
     return jsonify({
-        "hs_code": hs_code,
-        "reason": hs_res["reason"],
-        "policy": policy,
-        "caselaw": fetch_caselaw_hierarchy(hs_code)
+        "source": "global.json",
+        "hs_code": hs_final,
+        "leaf": leaf["code"],
+        "group": group["name"],
+        "caselaw": caselaw
     })
 
 @app.route("/chat", methods=["POST"])
 def chat():
-    data = request.get_json(force=True)
     return jsonify({
-        "answer": customs_advisor_chat(data.get("message"))
+        "answer": customs_advisor_chat(
+            request.get_json(force=True).get("message")
+        )
     })
 
 # ================= MAIN =================
