@@ -1,0 +1,137 @@
+/* sidebar.css - Sidebar Component Styles */
+
+.sidebar {
+  width: 260px;
+  background: rgba(15, 23, 42, 0.95);
+  backdrop-filter: blur(10px);
+  color: #fff;
+  padding: 24px 0;
+  box-shadow: 4px 0 24px rgba(0, 0, 0, 0.2);
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+.logo {
+  text-align: center;
+  font-size: 22px;
+  font-weight: 800;
+  margin-bottom: 40px;
+  letter-spacing: -0.5px;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.menu {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  flex: 1;
+}
+
+.menu li {
+  margin: 6px 16px;
+}
+
+.menu a {
+  display: flex;
+  align-items: center;
+  padding: 14px 20px;
+  color: #cbd5f5;
+  text-decoration: none;
+  border-radius: 10px;
+  transition: all 0.3s ease;
+  font-weight: 500;
+  position: relative;
+  overflow: hidden;
+}
+
+.menu a::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 100%;
+  width: 3px;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  transform: scaleY(0);
+  transition: transform 0.3s ease;
+}
+
+.menu li.active a,
+.menu a:hover {
+  background: rgba(102, 126, 234, 0.15);
+  color: #fff;
+  transform: translateX(4px);
+}
+
+.menu li.active a::before,
+.menu a:hover::before {
+  transform: scaleY(1);
+}
+
+.menu-icon {
+  margin-right: 12px;
+  font-size: 18px;
+}
+
+/* Sidebar Footer */
+.sidebar-footer {
+  padding: 20px 16px;
+  border-top: 1px solid rgba(203, 213, 245, 0.1);
+  margin-top: auto;
+}
+
+.version-info {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.version-label {
+  font-size: 11px;
+  color: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.version-number {
+  font-size: 13px;
+  color: #cbd5f5;
+  font-weight: 600;
+  font-family: "Courier New", monospace;
+  padding: 4px 12px;
+  background: rgba(102, 126, 234, 0.2);
+  border-radius: 6px;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .sidebar {
+    width: 80px;
+  }
+
+  .logo {
+    font-size: 16px;
+  }
+
+  .menu a span {
+    display: none;
+  }
+
+  .menu-icon {
+    margin-right: 0;
+  }
+
+  .version-label {
+    display: none;
+  }
+
+  .version-number {
+    font-size: 11px;
+    padding: 4px 8px;
+  }
+}

@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="vi">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>HS Internal - Advisory Tool</title>
+    <link rel="stylesheet" href="./static/styles_internal.css" />
+  </head>
+  <body>
+    <div class="layout">
+      <!-- Include Sidebar Component -->
+      {% include "sidebar.html" %}
+
+      <main class="content">
+        <div class="content-wrapper">
+          <h2>Internal HS Advisory Tool</h2>
+          <p class="subtitle">Search and explore harmonized system codes</p>
+
+          <div class="search-container">
+            <div class="search-box">
+              <input
+                type="text"
+                id="q"
+                placeholder="Enter product name or HS code..."
+              />
+              <button onclick="search()">Search</button>
+            </div>
+          </div>
+
+          <div class="grid-layout">
+            <!-- Left Column: Search Results -->
+            <div class="left-column">
+              <div class="results-header">
+                <h3>Search Results</h3>
+                <span class="results-count" id="resultsCount">0 results</span>
+              </div>
+
+              <ul id="result" class="results-list"></ul>
+
+              <div class="empty" id="emptyState">
+                <div class="empty-icon">🔍</div>
+                <div>
+                  No results yet. Try searching for a product or HS code.
+                </div>
+              </div>
+            </div>
+
+            <!-- Right Column: Chat -->
+            <div class="right-column">
+              <div class="chat-container" id="chatContainer">
+                <div class="chat-header">
+                  <span class="chat-title">Legal Advisory</span>
+                  <span class="selected-hs"
+                    >HS Code: <strong id="hs">Not selected</strong></span
+                  >
+                </div>
+                <div class="chat-box" id="box">
+                  📌 Select an HS Code from search results to start legal
+                  advisory
+                </div>
+                <div class="chat-input-container">
+                  <input
+                    type="text"
+                    id="chatInput"
+                    placeholder="Ask a question about this HS code..."
+                  />
+                  <button onclick="ask()">Send</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <script>
+      let selectedHS = null;
+
+      async function search() {
+        const q = document.getElementById("q").value.trim();
+        const res = await fetch("/api/hs/internal/similar", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ query: q }),
+        });
+        const data = await res.json();
+        const ul = document.getElementById("result");
+        const emptyState = document.getElementById("emptyState");
+        const resultsCount = document.getElementById("resultsCount");
+
+        ul.innerHTML = "";
+
+        if (data.length === 0) {
+          emptyState.style.display = "block";
+          resultsCount.textContent = "0 results";
+        } else {
+          emptyState.style.display = "none";
+          resultsCount.textContent = `${data.length} result${
+            data.length > 1 ? "s" : ""
+          }`;
+
+          data.forEach((it) => {
+            const li = document.createElement("li");
+            li.className = "result-card";
+            li.innerHTML = `
+              <div class="hs">${it.hs_code}</div>
+              <div class="name">${it.ten_hang}</div>
+            `;
+            li.onclick = () => selectHS(it.hs_code, li);
+            ul.appendChild(li);
+          });
+        }
+      }
+
+      function selectHS(code, element) {
+        selectedHS = code;
+        document.getElementById("hs").innerText = code;
+        document.getElementById("box").innerText =
+          "📌 Bắt đầu tư vấn pháp lý\n";
+
+        // Remove active class from all cards
+        document.querySelectorAll(".result-card").forEach((card) => {
+          card.classList.remove("selected");
+        });
+
+        // Add active class to selected card
+        element.classList.add("selected");
+      }
+
+      async function ask() {
+        if (!selectedHS) return alert("Chọn HS Code");
+        const q = document.getElementById("chatInput").value.trim();
+        if (!q) return;
+        const box = document.getElementById("box");
+        box.innerText += `\n👤 ${q}\n⚖️ `;
+        box.scrollTop = box.scrollHeight;
+
+        const res = await fetch("/api/hs/internal/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ hs_code: selectedHS, question: q }),
+        });
+        const reader = res.body.getReader();
+        const dec = new TextDecoder();
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          box.innerText += dec.decode(value);
+          box.scrollTop = box.scrollHeight;
+        }
+        document.getElementById("chatInput").value = "";
+      }
+
+      // Enter key support
+      document.getElementById("q").addEventListener("keypress", function (e) {
+        if (e.key === "Enter") search();
+      });
+
+      document
+        .getElementById("chatInput")
+        .addEventListener("keypress", function (e) {
+          if (e.key === "Enter") ask();
+        });
+    </script>
+  </body>
+</html>
