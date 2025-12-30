@@ -1,129 +1,230 @@
-/* sidebar.css - Sidebar Component Styles */
+/* sidebar.css - U&I Logistics Sidebar Component Styles */
 
 .sidebar {
-  width: 260px;
-  background: rgba(15, 23, 42, 0.95);
-  backdrop-filter: blur(10px);
+  width: 280px;
+  background: linear-gradient(180deg, #0066cc 0%, #0052a3 100%);
   color: #fff;
-  padding: 24px 0;
-  box-shadow: 4px 0 24px rgba(0, 0, 0, 0.2);
   display: flex;
   flex-direction: column;
   height: 100vh;
+  box-shadow: 4px 0 20px rgba(0, 102, 204, 0.15);
+  overflow: hidden;
 }
 
 .logo {
   text-align: center;
-  font-size: 22px;
+  font-size: 26px;
   font-weight: 800;
-  margin-bottom: 40px;
-  letter-spacing: -0.5px;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
+  padding: 32px 24px 24px;
+  letter-spacing: -0.8px;
+  color: #fff;
+  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  flex-shrink: 0;
 }
 
 .menu {
   list-style: none;
-  padding: 0;
+  padding: 0 20px;
   margin: 0;
   flex: 1;
+  overflow-y: auto;
+}
+
+.menu::-webkit-scrollbar {
+  width: 4px;
+}
+
+.menu::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.menu::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.3);
+  border-radius: 2px;
+}
+
+.menu::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.5);
 }
 
 .menu li {
-  margin: 6px 16px;
+  margin: 6px 0;
 }
 
 .menu a {
   display: flex;
   align-items: center;
-  padding: 14px 20px;
-  color: #cbd5f5;
+  padding: 12px 18px;
+  color: rgba(255, 255, 255, 0.8);
   text-decoration: none;
-  border-radius: 10px;
-  transition: all 0.3s ease;
+  border-radius: 12px;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
   font-weight: 500;
+  font-size: 15px;
   position: relative;
-  overflow: hidden;
 }
 
-.menu a::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 0;
-  height: 100%;
-  width: 3px;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  transform: scaleY(0);
-  transition: transform 0.3s ease;
+.menu li.active a {
+  background: rgba(255, 255, 255, 0.2);
+  color: #fff;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
 }
 
-.menu li.active a,
 .menu a:hover {
-  background: rgba(102, 126, 234, 0.15);
+  background: rgba(255, 255, 255, 0.12);
   color: #fff;
   transform: translateX(4px);
 }
 
-.menu li.active a::before,
-.menu a:hover::before {
-  transform: scaleY(1);
-}
-
 .menu-icon {
-  margin-right: 12px;
-  font-size: 18px;
+  margin-right: 14px;
+  font-size: 20px;
+  flex-shrink: 0;
 }
 
 /* Sidebar Footer */
 .sidebar-footer {
-  padding: 20px 16px;
-  border-top: 1px solid rgba(203, 213, 245, 0.1);
-  margin-top: auto;
+  padding: 20px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  flex-shrink: 0;
 }
 
 .version-info {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 4px;
+  gap: 8px;
 }
 
 .version-label {
   font-size: 11px;
-  color: #94a3b8;
+  color: rgba(255, 255, 255, 0.6);
   text-transform: uppercase;
-  letter-spacing: 0.5px;
+  letter-spacing: 1px;
+  font-weight: 600;
 }
 
 .version-number {
   font-size: 13px;
-  color: #cbd5f5;
-  font-weight: 600;
+  color: #fff;
+  font-weight: 700;
   font-family: "Courier New", monospace;
-  padding: 4px 12px;
-  background: rgba(102, 126, 234, 0.2);
-  border-radius: 6px;
+  padding: 6px 16px;
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
 }
 
-/* Responsive */
-@media (max-width: 768px) {
+/* Company branding badge */
+.company-badge {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin: 0 20px 16px;
+  padding: 12px;
+  background: rgba(255, 215, 0, 0.15);
+  border-radius: 12px;
+  border: 1px solid rgba(255, 215, 0, 0.3);
+  font-size: 12px;
+  font-weight: 600;
+  color: #ffd700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  flex-shrink: 0;
+}
+
+.company-badge::before {
+  content: "🚚";
+  font-size: 16px;
+}
+
+/* Responsive - Desktop Small */
+@media (max-width: 1400px) {
   .sidebar {
-    width: 80px;
+    width: 240px;
   }
 
   .logo {
-    font-size: 16px;
+    font-size: 22px;
+    padding: 24px 20px 20px;
+  }
+
+  .menu {
+    padding: 0 16px;
+  }
+
+  .menu a {
+    padding: 10px 16px;
+    font-size: 14px;
+  }
+}
+
+/* Responsive - Tablet */
+@media (max-width: 992px) {
+  .sidebar {
+    width: 220px;
+  }
+
+  .logo {
+    font-size: 20px;
+    padding: 20px 16px 16px;
+  }
+
+  .menu {
+    padding: 0 12px;
+  }
+
+  .menu a {
+    padding: 10px 14px;
+    font-size: 14px;
+  }
+
+  .menu-icon {
+    font-size: 18px;
+    margin-right: 12px;
+  }
+
+  .company-badge {
+    margin: 0 12px 12px;
+    padding: 10px;
+    font-size: 11px;
+  }
+
+  .sidebar-footer {
+    padding: 16px;
+  }
+}
+
+/* Responsive - Mobile */
+@media (max-width: 768px) {
+  .sidebar {
+    width: 70px;
+  }
+
+  .logo {
+    font-size: 14px;
+    padding: 20px 8px;
+    writing-mode: vertical-rl;
+    text-orientation: mixed;
+  }
+
+  .menu {
+    padding: 0 8px;
   }
 
   .menu a span {
     display: none;
   }
 
+  .menu a {
+    justify-content: center;
+    padding: 12px 8px;
+  }
+
   .menu-icon {
     margin-right: 0;
+    font-size: 22px;
   }
 
   .version-label {
@@ -131,7 +232,84 @@
   }
 
   .version-number {
-    font-size: 11px;
+    font-size: 10px;
     padding: 4px 8px;
+  }
+
+  .company-badge {
+    flex-direction: column;
+    margin: 0 8px 12px;
+    padding: 8px 4px;
+    gap: 4px;
+  }
+
+  .company-badge::before {
+    font-size: 18px;
+  }
+
+  .company-badge {
+    font-size: 0;
+  }
+
+  .sidebar-footer {
+    padding: 12px 8px;
+  }
+}
+
+/* Responsive - Mobile Small */
+@media (max-width: 480px) {
+  .sidebar {
+    width: 60px;
+  }
+
+  .logo {
+    font-size: 12px;
+    padding: 16px 6px;
+  }
+
+  .menu {
+    padding: 0 6px;
+  }
+
+  .menu a {
+    padding: 10px 6px;
+  }
+
+  .menu-icon {
+    font-size: 20px;
+  }
+
+  .company-badge {
+    margin: 0 6px 10px;
+    padding: 6px;
+  }
+
+  .company-badge::before {
+    font-size: 16px;
+  }
+}
+
+/* Tablet Landscape */
+@media (min-width: 769px) and (max-width: 1024px) and (orientation: landscape) {
+  .sidebar {
+    width: 200px;
+  }
+
+  .logo {
+    font-size: 18px;
+    padding: 20px 16px;
+  }
+
+  .menu {
+    padding: 0 12px;
+  }
+
+  .menu a {
+    padding: 10px 14px;
+    font-size: 13px;
+  }
+
+  .menu-icon {
+    font-size: 16px;
   }
 }
