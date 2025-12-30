@@ -45,8 +45,10 @@
     try {
       const response = await fetch("/api/version");
       const data = await response.json();
+      const shortVersion = data.version.split("+")[0];
+      console.log(shortVersion);
       document.getElementById("appVersion").textContent =
-        data.version || "v1.0.0";
+        shortVersion || "v1.0.0";
     } catch (error) {
       console.error("Failed to fetch version:", error);
       document.getElementById("appVersion").textContent = "v1.0.0";
