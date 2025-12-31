@@ -4,3 +4,4 @@ python-dotenv
 groq
 beautifulsoup4
 flask-cors
+google-genai
