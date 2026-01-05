@@ -39,11 +39,11 @@ output_db = load_output_db(JSON_PATH)
 
 # ================= ANTI-SPAM =================
 def is_spam_query(q: str) -> bool:
-    if not q or len(q.strip()) < 3:
+    if not q or len(q.strip()) < 2:
         return True
     if len(set(q)) <= 2:
         return True
-    if not re.search(r"[a-zA-Zà-ỹÀ-Ỹ]", q):
+    if not re.search(r"[a-zA-Z]", q):
         return True
     return False
 
