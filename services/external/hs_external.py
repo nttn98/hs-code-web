@@ -21,6 +21,7 @@ load_dotenv()
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 MODEL_AI = os.getenv("MODEL_AI", "llama-3.3-70b-versatile")
 JSON_GLOBAL = os.getenv("JSON_GLOBAL", "./data/global.json")
+DEBUG_LEAF = os.getenv("DEBUG_LEAF", "1") == "1"
 
 client = Groq(api_key=GROQ_API_KEY)
 
@@ -46,41 +47,23 @@ def stream_ai(prompt: str):
         model=MODEL_AI,
         messages=[{"role": "user", "content": prompt}],
         temperature=0,
-        max_tokens=200,
+        max_tokens=300,
         stream=True,
     )
     for chunk in stream:
         if chunk.choices[0].delta.content:
             yield chunk.choices[0].delta.content
 
-# =====================================================
-# SEMANTIC MAP (VN)
-# =====================================================
-SEMANTIC_MAP = {
-    "heo": ["lợn"],
-    "lợn": ["heo"],
-    "bò": ["gia súc"],
-    "trâu": ["gia súc"],
-    "dê": ["gia súc"],
-    "cừu": ["gia súc"],
-    "gà": ["gia cầm"],
-    "vịt": ["gia cầm"],
-    "ngan": ["gia cầm"],
-    "cá": ["thủy sản"],
-    "tôm": ["thủy sản"],
-    "mực": ["thủy sản"],
-}
 
-def expand_keywords(keywords):
-    expanded = set()
-
-    for k in keywords:
-        kl = k.lower()
-        expanded.add(kl)
-        for syn in SEMANTIC_MAP.get(kl, []):
-            expanded.add(syn.lower())
-
-    return list(expanded)
+def print_leaf_menu(title, leafs):
+    if not DEBUG_LEAF:
+        return
+    print("\n" + "=" * 70)
+    print(title)
+    print("=" * 70)
+    for i, l in enumerate(leafs, 1):
+        print(f"{i:02d}. {l['leaf_code']} - {l['leaf_name']}")
+    print("=" * 70 + "\n")
 
 # =====================================================
 # LOAD DATA
@@ -109,11 +92,8 @@ FLAT_LEAFS = flatten_leafs()
 # =====================================================
 # FIND LEAF
 # =====================================================
-def find_leaf_by_code(leaf_code: str):
-    return next(
-        (l for l in FLAT_LEAFS if l["leaf_code"] == leaf_code),
-        None
-    )
+def find_leaf_by_code(leaf_code):
+    return next((l for l in FLAT_LEAFS if l["leaf_code"] == leaf_code), None)
 
 # =====================================================
 # HS 6 / 8 DIGITS
@@ -121,7 +101,6 @@ def find_leaf_by_code(leaf_code: str):
 def get_hs_codes_by_leaf(leaf):
     items = []
     idx = 1
-
     for g in leaf.get("groups", []):
         if not g.get("children"):
             if g.get("code") and g.get("name"):
@@ -132,7 +111,6 @@ def get_hs_codes_by_leaf(leaf):
                 })
                 idx += 1
             continue
-
         for c in g.get("children", []):
             if c.get("code") and c.get("name"):
                 items.append({
@@ -141,69 +119,96 @@ def get_hs_codes_by_leaf(leaf):
                     "name": c["name"]
                 })
                 idx += 1
-
     return items
 
 # =====================================================
-# AI STEP 1: EXTRACT KEYWORDS
+# AI STEP 1: SEMANTIC ROLE EXTRACTION
 # =====================================================
-KEYWORD_PROMPT = """
-Trích 3–6 từ khóa quan trọng nhất từ mô tả hàng hóa.
-Chỉ trả JSON.
+SEMANTIC_PROMPT = """
+Phân tích mô tả hàng hóa và trích xuất từ khóa theo vai trò ngữ nghĩa.
+
+Vai trò:
+- device: máy móc, thiết bị, dụng cụ
+- action: hành động chính (cắt, khoan, mài, ép, ...)
+- object: vật liệu / đối tượng tác động
+
+⚠️ Không suy đoán mã HS
+⚠️ Không giải thích
+⚠️ Chỉ trả JSON
 
 MÔ TẢ:
 "{query}"
 
 JSON:
 {{
-  "keywords": ["...", "..."]
+  "device": [],
+  "action": [],
+  "object": []
 }}
 """
 
-def ai_extract_keywords(query: str):
+def ai_extract_semantic(query: str):
     buffer = ""
-    for t in stream_ai(KEYWORD_PROMPT.format(query=query)):
+    for t in stream_ai(SEMANTIC_PROMPT.format(query=query)):
         buffer += t
 
     raw = extract_json(buffer)
     if not raw:
-        return []
+        return {"device": [], "action": [], "object": []}
 
     try:
-        return json.loads(raw).get("keywords", [])
+        return json.loads(raw)
     except Exception:
-        return []
+        return {"device": [], "action": [], "object": []}
 
 # =====================================================
-# LOCAL FILTER LEAF
+# SEMANTIC SCORING (NO HARDCODE HS)
 # =====================================================
-def filter_leaf_by_keywords(keywords, limit=15):
+def score_leaf(leaf, semantic):
+    text = (leaf["leaf_name"] or "").lower()
+
+    for g in leaf.get("groups", []):
+        text += " " + (g.get("name") or "").lower()
+        for c in g.get("children", []):
+            text += " " + (c.get("name") or "").lower()
+
+    score = 0
+
+    for k in semantic.get("device", []):
+        if k.lower() in text:
+            score += 5
+
+    for k in semantic.get("action", []):
+        if k.lower() in text:
+            score += 3
+
+    for k in semantic.get("object", []):
+        if k.lower() in text:
+            score += 1
+
+    return score
+
+
+def filter_leaf_semantic(semantic, limit=15):
     scored = []
-
     for leaf in FLAT_LEAFS:
-        text = (leaf["leaf_name"] or "").lower()
-
-        for g in leaf.get("groups", []):
-            text += " " + (g.get("name") or "").lower()
-            for c in g.get("children", []):
-                text += " " + (c.get("name") or "").lower()
-
-        score = sum(1 for k in keywords if k in text)
-        if score > 0:
-            scored.append((score, leaf))
+        s = score_leaf(leaf, semantic)
+        if s > 0:
+            scored.append((s, leaf))
 
     scored.sort(key=lambda x: x[0], reverse=True)
     return [l for _, l in scored[:limit]]
 
 # =====================================================
-# AI STEP 2: RANK LEAF LIST
+# AI STEP 2: RANK LEAF (OPTIONAL)
 # =====================================================
 RANK_LEAF_PROMPT = """
 Bạn là chuyên gia HS Code.
 
 Nhiệm vụ:
-- Sắp xếp các nhóm HS 4 số theo độ phù hợp (giảm dần)
+- Sắp xếp các nhóm HS 4 số theo độ phù hợp
 - KHÔNG tạo mã mới
+- KHÔNG sửa mã
 
 DANH SÁCH:
 {leafs}
@@ -213,7 +218,7 @@ MÔ TẢ:
 
 TRẢ JSON:
 {{
-  "ranking": ["0101", "0103", "..."]
+  "ranking": ["xxxx", "..."]
 }}
 """
 
@@ -240,7 +245,7 @@ def ai_rank_leafs(query, leafs):
         return []
 
 # =====================================================
-# API 1: SEARCH LEAF (RETURN LIST)
+# API 1: SEARCH LEAF
 # =====================================================
 @hs_external_bp.route("/search-leaf", methods=["POST"])
 def api_search_leaf():
@@ -248,40 +253,38 @@ def api_search_leaf():
     if len(query) < 3:
         return jsonify({"error": "Query quá ngắn"}), 400
 
-    # 1. extract keyword
-    keywords = ai_extract_keywords(query)
+    # 1. semantic extract
+    semantic = ai_extract_semantic(query)
+    logger.warning("SEMANTIC: %s", semantic)
 
-    # 2. semantic expand
-    keywords = expand_keywords(keywords)
-    logger.warning("KEYWORDS NORMALIZED: %s", keywords)
+    # 2. semantic filter
+    shortlist = filter_leaf_semantic(semantic)
+    print_leaf_menu("SHORTLIST (SEMANTIC)", shortlist)
 
-    # 3. local filter
-    shortlist = filter_leaf_by_keywords(keywords)
     if not shortlist:
         return jsonify({"groups": []})
 
-    # 4. AI ranking
+    # 3. AI rank (optional)
     ranked_codes = ai_rank_leafs(query, shortlist)
 
-    # fallback
-    if not ranked_codes:
-        return jsonify({
-            "groups": [
-                {"code": l["leaf_code"], "name": l["leaf_name"]}
-                for l in shortlist[:5]
-            ]
-        })
-
-    result = []
+    ranked_leafs = []
     for code in ranked_codes:
         leaf = find_leaf_by_code(code)
         if leaf:
-            result.append({
-                "code": leaf["leaf_code"],
-                "name": leaf["leaf_name"]
-            })
+            ranked_leafs.append(leaf)
 
-    return jsonify({"groups": result})
+    if ranked_leafs:
+        print_leaf_menu("AI RANKED RESULT", ranked_leafs)
+        final = ranked_leafs
+    else:
+        final = shortlist[:5]
+
+    return jsonify({
+        "groups": [
+            {"code": l["leaf_code"], "name": l["leaf_name"]}
+            for l in final
+        ]
+    })
 
 # =====================================================
 # API 2: FIND BY LEAF
@@ -292,7 +295,7 @@ def api_find_by_leaf():
     leaf = find_leaf_by_code(leaf_code)
 
     if not leaf:
-        return jsonify({"error": "Leaf không tồn tại"}), 404
+        return jsonify({"error": "Leaf không tồn tại"}), 404    
 
     return jsonify({
         "leaf_code": leaf_code,
