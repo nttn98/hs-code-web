@@ -1,13 +1,11 @@
 import json
 import os
+import logging
 import re
+from functools import lru_cache
+
 from flask import Blueprint, request, Response, jsonify, stream_with_context
 from dotenv import load_dotenv
-from functools import lru_cache
-import logging
-from difflib import SequenceMatcher
-from hashlib import md5
-
 from groq import Groq
 
 # =====================================================
@@ -20,702 +18,369 @@ logger = logging.getLogger(__name__)
 # ENV
 # =====================================================
 load_dotenv()
-
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 MODEL_AI = os.getenv("MODEL_AI", "llama-3.3-70b-versatile")
-
-if not GROQ_API_KEY:
-    raise RuntimeError("❌ Thiếu GROQ_API_KEY")
+JSON_GLOBAL = os.getenv("JSON_GLOBAL", "./data/global.json")
 
 client = Groq(api_key=GROQ_API_KEY)
-logger.info(f"✓ Using Groq model: {MODEL_AI}")
 
 # =====================================================
-# CONFIG
+# BLUEPRINT
 # =====================================================
-hs_external_bp = Blueprint("hs_external", __name__)
-DATA_FILE = "./data/global.json"
+hs_external_bp = Blueprint(
+    "hs_external",
+    __name__,
+    url_prefix="/api/hs/external"
+)
 
 # =====================================================
-# LOAD + FLATTEN GLOBAL.JSON (CACHED)
+# UTILS
+# =====================================================
+def extract_json(text: str):
+    match = re.search(r"\{[\s\S]*\}", text)
+    return match.group(0) if match else None
+
+
+def stream_ai(prompt: str):
+    stream = client.chat.completions.create(
+        model=MODEL_AI,
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0,
+        max_tokens=200,
+        stream=True,
+    )
+    for chunk in stream:
+        if chunk.choices[0].delta.content:
+            yield chunk.choices[0].delta.content
+
+# =====================================================
+# SEMANTIC MAP (VN)
+# =====================================================
+SEMANTIC_MAP = {
+    "heo": ["lợn"],
+    "lợn": ["heo"],
+    "bò": ["gia súc"],
+    "trâu": ["gia súc"],
+    "dê": ["gia súc"],
+    "cừu": ["gia súc"],
+    "gà": ["gia cầm"],
+    "vịt": ["gia cầm"],
+    "ngan": ["gia cầm"],
+    "cá": ["thủy sản"],
+    "tôm": ["thủy sản"],
+    "mực": ["thủy sản"],
+}
+
+def expand_keywords(keywords):
+    expanded = set()
+
+    for k in keywords:
+        kl = k.lower()
+        expanded.add(kl)
+        for syn in SEMANTIC_MAP.get(kl, []):
+            expanded.add(syn.lower())
+
+    return list(expanded)
+
+# =====================================================
+# LOAD DATA
 # =====================================================
 @lru_cache(maxsize=1)
 def load_global_data():
-    """Load global data with caching"""
-    try:
-        with open(DATA_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            return data.get("data", [])
-    except FileNotFoundError:
-        logger.error(f"File not found: {DATA_FILE}")
-        return []
-    except json.JSONDecodeError as e:
-        logger.error(f"JSON decode error: {e}")
-        return []
+    with open(JSON_GLOBAL, "r", encoding="utf-8") as f:
+        return json.load(f)["data"]
 
-@lru_cache(maxsize=1)
-def flatten_hs_tree():
-    """
-    Flatten hierarchical HS tree into list of leaf codes
-    """
-    tree = load_global_data()
-    rows = []
-
-    for chapter in tree:
-        chapter_code = chapter.get("code", "")
-        chapter_desc = chapter.get("description", "")
-
+# =====================================================
+# FLATTEN LEAF (4 DIGITS)
+# =====================================================
+def flatten_leafs():
+    result = []
+    for chapter in load_global_data():
         for leaf in chapter.get("leaf", []):
-            group_code = leaf.get("code", "")
-            group_desc = leaf.get("name", "")
+            result.append({
+                "leaf_code": leaf.get("code"),
+                "leaf_name": leaf.get("name"),
+                "groups": leaf.get("group", [])
+            })
+    return result
 
-            for group in leaf.get("group", []):
-                if not isinstance(group, dict):
-                    continue
-
-                def walk(node, parent_name=""):
-                    if not isinstance(node, dict):
-                        return
-
-                    code = node.get("code")
-                    name = node.get("name", "")
-                    
-                    # Build full context path
-                    full_context = f"{parent_name} > {name}" if parent_name else name
-
-                    # Only add valid HS codes (6-8 digits)
-                    if isinstance(code, str) and re.fullmatch(r"\d{6,8}", code):
-                        rows.append({
-                            "hs_code": code,
-                            "hs_name": name,
-                            "full_context": full_context,
-                            "chapter_code": chapter_code,
-                            "chapter_desc": chapter_desc,
-                            "group_code": group_code,
-                            "group_desc": group_desc,
-                        })
-
-                    # Recursively walk children
-                    for child in node.get("children", []):
-                        walk(child, full_context)
-
-                walk(group)
-
-    logger.info(f"Flattened {len(rows)} HS codes")
-    return rows
-
-@lru_cache(maxsize=1)
-def get_chapter_summary():
-    """
-    Create a concise summary of all chapters for AI context
-    """
-    tree = load_global_data()
-    summary = []
-    chapters_found = []
-    
-    for chapter in tree:
-        code = chapter.get("code", "")
-        desc = chapter.get("description", "")
-        if code and desc:
-            chapters_found.append(code)
-            # Normalize: remove leading zeros for consistency
-            normalized_code = code.lstrip("0") or "0"
-            summary.append(f"• Chương {normalized_code}: {desc}")
-    
-    logger.info(f"Loaded {len(chapters_found)} chapters: {chapters_found[:10]}...")
-    return "\n".join(summary)
+FLAT_LEAFS = flatten_leafs()
 
 # =====================================================
-# SIMPLE CACHE TO REDUCE API CALLS
+# FIND LEAF
 # =====================================================
-@lru_cache(maxsize=100)
-def get_cached_chapter(query_hash: str):
-    """Cache chapter selection results"""
-    return None
-
-# =====================================================
-# FALLBACK METHOD
-# =====================================================
-def simple_chapter_fallback(query: str):
-    """
-    Fallback: Simple keyword matching when AI is unavailable
-    """
-    query_lower = query.lower()
-    
-    # Simple keyword-to-chapter mapping
-    keyword_map = {
-        "1": ["động vật", "ngựa", "lừa", "trâu", "bò", "lợn", "cừu", "dê", "gà", "vịt", "thỏ"],
-        "2": ["thịt", "cá", "hải sản", "tôm", "mực"],
-        "3": ["sữa", "trứng", "mật ong"],
-        "4": ["cà phê", "chè", "trà"],
-        "7": ["rau", "củ", "quả"],
-        "8": ["hoa quả", "táo", "chuối", "cam", "thanh long", "xoài", "dưa"],
-        "10": ["ngũ cốc", "lúa", "gạo"],
-        "84": ["máy móc", "động cơ", "máy bơm"],
-        "85": ["điện", "máy tính", "điện thoại"],
-        "87": ["xe", "ô tô", "xe máy"],
-    }
-    
-    best_chapter = None
-    best_score = 0
-    
-    for chapter, keywords in keyword_map.items():
-        for keyword in keywords:
-            if keyword in query_lower:
-                score = len(keyword)
-                if score > best_score:
-                    best_score = score
-                    best_chapter = chapter
-    
-    if best_chapter:
-        logger.info(f"Fallback selected chapter: {best_chapter} (score: {best_score})")
-        return best_chapter
-    
-    return None
-
-# =====================================================
-# GET LEAF GROUPS (4-DIGIT CODES)
-# =====================================================
-@lru_cache(maxsize=1)
-def get_leaf_groups():
-    """
-    Get all 4-digit leaf groups with their descriptions
-    Returns: list of {code, name, chapter_code, chapter_desc}
-    """
-    tree = load_global_data()
-    leaf_groups = []
-    
-    for chapter in tree:
-        chapter_code = chapter.get("code", "")
-        chapter_desc = chapter.get("description", "")
-        
-        for leaf in chapter.get("leaf", []):
-            leaf_code = leaf.get("code", "")
-            leaf_name = leaf.get("name", "")
-            
-            if leaf_code and leaf_name:
-                leaf_groups.append({
-                    "code": leaf_code,
-                    "name": leaf_name,
-                    "chapter_code": chapter_code,
-                    "chapter_desc": chapter_desc
-                })
-    
-    logger.info(f"Loaded {len(leaf_groups)} leaf groups")
-    return leaf_groups
-
-# =====================================================
-# AI-POWERED HS CODE SELECTION (THREE-STAGE) - GROQ
-# =====================================================
-def ai_select_chapter(query: str):
-    """
-    Stage 1: AI selects the most relevant chapter using Groq
-    Returns: chapter_code or None
-    """
-    # Check cache first
-    query_hash = md5(query.lower().strip().encode()).hexdigest()
-    
-    chapter_summary = get_chapter_summary()
-    
-    prompt = f"""Bạn là chuyên gia phân loại HS Code. Nhiệm vụ: xác định CHƯƠNG HS phù hợp với hàng hóa.
-
-# DANH SÁCH CHƯƠNG HS
-{chapter_summary}
-
-# HÀNG HÓA
-"{query}"
-
-# YÊU CẦU
-Phân tích đặc điểm hàng hóa (vật liệu, công dụng, nguồn gốc, trạng thái) và chọn CHƯƠNG HS phù hợp nhất.
-
-# OUTPUT (CHỈ TRẢ VỀ JSON)
-{{
-  "chapter": "số chương (VÍ DỤ: 1, 8, 10, 84 - KHÔNG CÓ SỐ 0 ĐẰNG TRƯỚC)",
-  "reasoning": "Lý do ngắn gọn (1 câu)"
-}}
-
-LƯU Ý: 
-- CHỈ TRẢ VỀ JSON, KHÔNG CÓ TEXT KHÁC
-- Số chương KHÔNG có số 0 đằng trước (ví dụ: "1" chứ không phải "01")"""
-
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            response = client.chat.completions.create(
-                model=MODEL_AI,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "Bạn là chuyên gia phân loại HS Code. Chỉ trả về JSON, không có text khác."
-                    },
-                    {
-                        "role": "user",
-                        "content": prompt
-                    }
-                ],
-                temperature=0.1,
-                max_tokens=200,
-                response_format={"type": "json_object"}
-            )
-            
-            result_text = response.choices[0].message.content.strip()
-            result = json.loads(result_text)
-            
-            chapter = result.get("chapter", "").strip()
-            reasoning = result.get("reasoning", "")
-            
-            # Normalize chapter: remove leading zeros
-            chapter = chapter.lstrip("0") or "0"
-            
-            logger.info(f"AI selected chapter: {chapter} - {reasoning}")
-            return chapter
-            
-        except Exception as e:
-            error_str = str(e)
-            
-            # Handle rate limit
-            if "rate_limit" in error_str.lower() or "429" in error_str:
-                import time
-                delay = 5 * (attempt + 1)
-                
-                logger.warning(f"Rate limit hit. Retrying in {delay}s (attempt {attempt+1}/{max_retries})")
-                
-                if attempt < max_retries - 1:
-                    time.sleep(delay)
-                    continue
-                else:
-                    logger.error("Max retries reached, using fallback")
-                    return simple_chapter_fallback(query)
-            
-            # Other errors
-            logger.error(f"Chapter selection error (attempt {attempt+1}): {e}")
-            if attempt == max_retries - 1:
-                return simple_chapter_fallback(query)
-    
-    return simple_chapter_fallback(query)
-
-def ai_select_leaf_group(query: str, chapter: str):
-    """
-    Stage 2: AI selects the most relevant 4-digit leaf group
-    Returns: leaf_code or None
-    """
-    # Get all leaf groups for this chapter
-    all_leaf_groups = get_leaf_groups()
-    chapter_normalized = chapter.lstrip("0") or "0"
-    
-    chapter_leaves = [
-        leaf for leaf in all_leaf_groups
-        if leaf["chapter_code"].lstrip("0") == chapter_normalized
-    ]
-    
-    if not chapter_leaves:
-        logger.error(f"No leaf groups found for chapter {chapter}")
-        return None
-    
-    # Build leaf summary
-    leaf_text = ""
-    for leaf in chapter_leaves[:50]:  # Limit to avoid token overflow
-        leaf_text += f"• {leaf['code']}: {leaf['name']}\n"
-    
-    prompt = f"""Bạn là chuyên gia phân loại HS Code. Nhiệm vụ: chọn NHÓM HÀNG (4 số) phù hợp nhất.
-
-# DANH SÁCH NHÓM HÀNG (Chương {chapter})
-{leaf_text}
-
-# HÀNG HÓA
-"{query}"
-
-# YÊU CẦU
-Phân tích đặc điểm hàng hóa và chọn NHÓM 4 SỐ phù hợp nhất.
-
-# OUTPUT (CHỈ TRẢ VỀ JSON)
-{{
-  "leaf_code": "mã 4 số (VÍ DỤ: 0309)",
-  "reasoning": "Lý do chọn (1 câu)"
-}}
-
-LƯU Ý: CHỈ TRẢ VỀ JSON"""
-
-    try:
-        response = client.chat.completions.create(
-            model=MODEL_AI,
-            messages=[
-                {
-                    "role": "system",
-                    "content": "Bạn là chuyên gia HS Code. Chỉ trả JSON."
-                },
-                {
-                    "role": "user",
-                    "content": prompt
-                }
-            ],
-            temperature=0.1,
-            max_tokens=200,
-            response_format={"type": "json_object"}
-        )
-        
-        result = json.loads(response.choices[0].message.content.strip())
-        leaf_code = result.get("leaf_code", "").strip()
-        reasoning = result.get("reasoning", "")
-        
-        logger.info(f"AI selected leaf: {leaf_code} - {reasoning}")
-        return leaf_code
-        
-    except Exception as e:
-        logger.error(f"Leaf selection error: {e}")
-        return None
-
-def ai_select_specific_code(query: str, chapter: str, leaf_code: str, candidates: list):
-    """
-    Stage 2: AI selects specific HS code from filtered candidates using Groq
-    """
-    # Prepare candidates list with full context
-    candidates_text = ""
-    for idx, item in enumerate(candidates[:100], 1):  # Limit to 100 for token safety
-        context = item.get("full_context", item["hs_name"])
-        candidates_text += f"{idx}. {item['hs_code']}: {context}\n"
-    
-    if not candidates_text:
-        return None
-    
-    prompt = f"""Bạn là chuyên gia phân loại HS Code. Nhiệm vụ: chọn MÃ HS CỤ THỂ NHẤT từ danh sách.
-
-# DANH SÁCH MÃ HS (Chương {chapter})
-{candidates_text}
-
-# HÀNG HÓA
-"{query}"
-
-# YÊU CẦU
-1. Phân tích chi tiết đặc điểm hàng hóa
-2. So sánh với từng mã HS trong danh sách
-3. Chọn mã HS CỤ THỂ NHẤT (8 số nếu có, 6 số nếu không)
-4. Đánh giá độ tin cậy:
-   - high: Rất chắc chắn (>90%)
-   - medium: Khá chắc chắn (70-90%)
-   - low: Không chắc chắn (<70%)
-
-# OUTPUT (CHỈ TRẢ VỀ JSON)
-{{
-  "selected_code": "mã HS 6-8 số",
-  "confidence": "high|medium|low",
-  "reasoning": "Giải thích chi tiết tại sao chọn mã này (2-3 câu)",
-  "key_features": "Đặc điểm quan trọng của hàng hóa đã xem xét"
-}}
-
-LƯU Ý:
-- Mã phải TỒN TẠI trong danh sách trên
-- Ưu tiên mã CỤ THỂ (8 số) hơn mã CHUNG (6 số)
-- Nếu không chắc chắn, đặt confidence là "low"
-- CHỈ TRẢ VỀ JSON"""
-
-    try:
-        response = client.chat.completions.create(
-            model=MODEL_AI,
-            messages=[
-                {
-                    "role": "system",
-                    "content": "Bạn là chuyên gia phân loại HS Code. Chỉ trả về JSON, không có text khác."
-                },
-                {
-                    "role": "user",
-                    "content": prompt
-                }
-            ],
-            temperature=0.15,
-            max_tokens=400,
-            response_format={"type": "json_object"}
-        )
-        
-        result_text = response.choices[0].message.content.strip()
-        result = json.loads(result_text)
-        
-        selected_code = result.get("selected_code")
-        confidence = result.get("confidence", "unknown").lower()
-        reasoning = result.get("reasoning", "")
-        key_features = result.get("key_features", "")
-        
-        logger.info(f"AI selected code: {selected_code} (confidence: {confidence})")
-        logger.info(f"Reasoning: {reasoning}")
-        
-        if not selected_code:
-            return None
-            
-        # Find full HS data
-        for item in candidates:
-            if item["hs_code"] == selected_code:
-                return {
-                    **item,
-                    "ai_confidence": confidence,
-                    "ai_reasoning": reasoning,
-                    "ai_key_features": key_features
-                }
-        
-        logger.warning(f"Selected code {selected_code} not found in candidates")
-        return None
-        
-    except Exception as e:
-        logger.error(f"Code selection error: {e}")
-        return None
-
-# =====================================================
-# MAIN AI SELECTION PIPELINE
-# =====================================================
-def ai_select_hs_code(query: str):
-    """
-    Three-stage AI selection:
-    1. Select relevant chapter (2 digits)
-    2. Select leaf group (4 digits)
-    3. Select specific HS code (6-8 digits)
-    """
-    all_codes = flatten_hs_tree()
-    
-    if not all_codes:
-        logger.error("No HS codes available")
-        return None
-    
-    # Stage 1: Select chapter
-    logger.info("Stage 1: Selecting chapter...")
-    chapter = ai_select_chapter(query)
-    
-    if not chapter:
-        logger.error("Failed to select chapter")
-        return None
-    
-    # Stage 2: Select leaf group (4 digits)
-    logger.info("Stage 2: Selecting leaf group...")
-    leaf_code = ai_select_leaf_group(query, chapter)
-    
-    if not leaf_code:
-        logger.error("Failed to select leaf group")
-        # Fallback: use all codes from chapter
-        chapter_normalized = chapter.lstrip("0") or "0"
-        chapter_codes = [
-            item for item in all_codes 
-            if item["chapter_code"].lstrip("0") == chapter_normalized
-        ]
-        
-        if not chapter_codes:
-            return None
-            
-        logger.info(f"Fallback: Using all {len(chapter_codes)} codes from chapter")
-        selected = ai_select_specific_code(query, chapter, "all", chapter_codes)
-        return selected
-    
-    # Filter codes by chapter AND leaf group (first 4 digits)
-    chapter_normalized = chapter.lstrip("0") or "0"
-    leaf_codes = [
-        item for item in all_codes 
-        if item["chapter_code"].lstrip("0") == chapter_normalized
-        and item["group_code"].startswith(leaf_code)
-    ]
-    
-    logger.info(f"Found {len(leaf_codes)} codes in chapter {chapter}, leaf {leaf_code}")
-    
-    if not leaf_codes:
-        logger.warning(f"No codes found for leaf {leaf_code}, trying all codes in chapter")
-        # Fallback: use all codes from chapter
-        chapter_codes = [
-            item for item in all_codes 
-            if item["chapter_code"].lstrip("0") == chapter_normalized
-        ]
-        
-        if not chapter_codes:
-            return None
-            
-        selected = ai_select_specific_code(query, chapter, leaf_code, chapter_codes)
-        return selected
-    
-    # Stage 3: Select specific code
-    logger.info("Stage 3: Selecting specific code...")
-    selected = ai_select_specific_code(query, chapter, leaf_code, leaf_codes)
-    
-    return selected
-
-# =====================================================
-# STREAM AI EXPLANATION
-# =====================================================
-def stream_ai_explain(query: str, hs: dict):
-    """
-    Stream detailed explanation for selected HS code using Groq
-    """
-    confidence = hs.get("ai_confidence", "unknown")
-    reasoning = hs.get("ai_reasoning", "")
-    key_features = hs.get("ai_key_features", "")
-    
-    confidence_text = {
-        "high": "cao ✅",
-        "medium": "trung bình ⚠️",
-        "low": "thấp ⚠️",
-    }.get(confidence, "chưa xác định")
-
-    prompt = f"""Bạn là chuyên gia phân loại HS Code. Hãy giải thích chi tiết kết quả phân loại.
-
-# THÔNG TIN MÃ HS
-- Mã HS: {hs['hs_code']}
-- Tên: {hs['hs_name']}
-- Chương {hs['chapter_code']}: {hs['chapter_desc']}
-- Nhóm {hs['group_code']}: {hs['group_desc']}
-- Độ tin cậy: {confidence_text}
-
-# PHÂN TÍCH CỦA AI
-- Lý do chọn: {reasoning}
-- Đặc điểm quan trọng: {key_features}
-
-# HÀNG HÓA
-"{query}"
-
-# YÊU CẦU TRÌNH BÀY
-
-## 1. Xác nhận kết quả (ngắn gọn 1-2 câu)
-- Khẳng định mã HS này phù hợp/có thể phù hợp
-- Giải thích ngắn gọn căn cứ phân loại
-
-## 2. Phân tích chi tiết (ngắn gọn 1-2 điểm)
-- Đặc điểm chính của hàng hóa phù hợp với mã HS
-- Tiêu chí phân loại quan trọng đã áp dụng
-- Phạm vi và giới hạn của mã HS này
-
-## 3. Lưu ý thực tế
-- Điều kiện hoặc yêu cầu đặc biệt (nếu có)
-- Các mã HS tương tự cần phân biệt (nếu có)
-- Khuyến nghị xác minh với cơ quan hải quan
-{f"- **⚠️ QUAN TRỌNG**: Độ tin cậy {confidence_text} - Nên tham khảo thêm ý kiến chuyên gia hải quan" if confidence in ["medium", "low"] else ""}
-
-# QUY TẮC
-- Sử dụng markdown: **bold**, bullet points, ## headers
-- Ngắn gọn, rõ ràng, chuyên nghiệp
-- Chỉ dựa vào thông tin đã cung cấp
-- KHÔNG suy đoán hoặc thêm thông tin không có
-"""
-
-    try:
-        # Send metadata first
-        metadata = {
-            "type": "metadata",
-            "data": {
-                **hs,
-                "confidence": confidence,
-                "confidence_text": confidence_text,
-                "reasoning": reasoning,
-                "key_features": key_features
-            }
-        }
-        yield f"data:{json.dumps(metadata, ensure_ascii=False)}\n\n"
-
-        # Stream explanation
-        stream = client.chat.completions.create(
-            model=MODEL_AI,
-            messages=[
-                {
-                    "role": "system",
-                    "content": "Bạn là chuyên gia phân loại HS Code. Trả lời bằng markdown format."
-                },
-                {
-                    "role": "user",
-                    "content": prompt
-                }
-            ],
-            temperature=0.2,
-            max_tokens=1200,
-            stream=True
-        )
-
-        for chunk in stream:
-            if chunk.choices[0].delta.content:
-                text_data = {
-                    "type": "text",
-                    "content": chunk.choices[0].delta.content
-                }
-                yield f"data:{json.dumps(text_data, ensure_ascii=False)}\n\n"
-
-    except Exception as e:
-        logger.error(f"Explanation streaming error: {e}")
-        error_data = {
-            "type": "error",
-            "message": "Lỗi khi tạo giải thích"
-        }
-        yield f"data:{json.dumps(error_data, ensure_ascii=False)}\n\n"
-
-# =====================================================
-# API ENDPOINT
-# =====================================================
-@hs_external_bp.route("/hs_external", methods=["POST"])
-def hs_external():
-    """
-    Main API endpoint - Two-stage AI classification using Groq
-    """
-    if not request.is_json:
-        return jsonify({
-            "success": False,
-            "message": "Content-Type phải là application/json"
-        }), 400
-
-    data = request.get_json(silent=True)
-    if not data:
-        return jsonify({
-            "success": False,
-            "message": "JSON không hợp lệ"
-        }), 400
-
-    query = str(data.get("query", "")).strip()
-    if not query:
-        return jsonify({
-            "success": False,
-            "message": "Thiếu trường 'query'"
-        }), 400
-
-    if len(query) < 5:
-        return jsonify({
-            "success": False,
-            "message": "Mô tả quá ngắn. Vui lòng mô tả chi tiết hơn (ít nhất 5 ký tự)."
-        }), 400
-
-    # AI selection pipeline
-    logger.info(f"Processing query: {query}")
-    
-    try:
-        selected_hs = ai_select_hs_code(query)
-    except Exception as e:
-        logger.error(f"AI selection error: {e}")
-        return jsonify({
-            "success": False,
-            "message": "Lỗi khi phân tích. Vui lòng thử lại."
-        }), 500
-
-    if not selected_hs:
-        return jsonify({
-            "success": True,
-            "message": "AI không thể xác định mã HS phù hợp. Đề xuất:\n• Mô tả chi tiết hơn về vật liệu, công dụng\n• Nêu rõ trạng thái (nguyên liệu/thành phẩm)\n• Tham khảo chuyên gia hải quan"
-        }), 200
-
-    # Stream explanation
-    return Response(
-        stream_with_context(stream_ai_explain(query, selected_hs)),
-        content_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-            "Connection": "keep-alive",
-        },
+def find_leaf_by_code(leaf_code: str):
+    return next(
+        (l for l in FLAT_LEAFS if l["leaf_code"] == leaf_code),
+        None
     )
 
 # =====================================================
-# HEALTH CHECK
+# HS 6 / 8 DIGITS
 # =====================================================
-@hs_external_bp.route("/health", methods=["GET"])
-def health():
-    """Health check endpoint"""
+def get_hs_codes_by_leaf(leaf):
+    items = []
+    idx = 1
+
+    for g in leaf.get("groups", []):
+        if not g.get("children"):
+            if g.get("code") and g.get("name"):
+                items.append({
+                    "id": idx,
+                    "code": g["code"],
+                    "name": g["name"]
+                })
+                idx += 1
+            continue
+
+        for c in g.get("children", []):
+            if c.get("code") and c.get("name"):
+                items.append({
+                    "id": idx,
+                    "code": c["code"],
+                    "name": c["name"]
+                })
+                idx += 1
+
+    return items
+
+# =====================================================
+# AI STEP 1: EXTRACT KEYWORDS
+# =====================================================
+KEYWORD_PROMPT = """
+Trích 3–6 từ khóa quan trọng nhất từ mô tả hàng hóa.
+Chỉ trả JSON.
+
+MÔ TẢ:
+"{query}"
+
+JSON:
+{{
+  "keywords": ["...", "..."]
+}}
+"""
+
+def ai_extract_keywords(query: str):
+    buffer = ""
+    for t in stream_ai(KEYWORD_PROMPT.format(query=query)):
+        buffer += t
+
+    raw = extract_json(buffer)
+    if not raw:
+        return []
+
     try:
-        codes_count = len(flatten_hs_tree())
+        return json.loads(raw).get("keywords", [])
+    except Exception:
+        return []
+
+# =====================================================
+# LOCAL FILTER LEAF
+# =====================================================
+def filter_leaf_by_keywords(keywords, limit=15):
+    scored = []
+
+    for leaf in FLAT_LEAFS:
+        text = (leaf["leaf_name"] or "").lower()
+
+        for g in leaf.get("groups", []):
+            text += " " + (g.get("name") or "").lower()
+            for c in g.get("children", []):
+                text += " " + (c.get("name") or "").lower()
+
+        score = sum(1 for k in keywords if k in text)
+        if score > 0:
+            scored.append((score, leaf))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [l for _, l in scored[:limit]]
+
+# =====================================================
+# AI STEP 2: RANK LEAF LIST
+# =====================================================
+RANK_LEAF_PROMPT = """
+Bạn là chuyên gia HS Code.
+
+Nhiệm vụ:
+- Sắp xếp các nhóm HS 4 số theo độ phù hợp (giảm dần)
+- KHÔNG tạo mã mới
+
+DANH SÁCH:
+{leafs}
+
+MÔ TẢ:
+"{query}"
+
+TRẢ JSON:
+{{
+  "ranking": ["0101", "0103", "..."]
+}}
+"""
+
+def ai_rank_leafs(query, leafs):
+    leaf_text = "\n".join(
+        f"{l['leaf_code']} – {l['leaf_name']}"
+        for l in leafs
+    )
+
+    buffer = ""
+    for t in stream_ai(RANK_LEAF_PROMPT.format(
+        leafs=leaf_text,
+        query=query
+    )):
+        buffer += t
+
+    raw = extract_json(buffer)
+    if not raw:
+        return []
+
+    try:
+        return json.loads(raw).get("ranking", [])
+    except Exception:
+        return []
+
+# =====================================================
+# API 1: SEARCH LEAF (RETURN LIST)
+# =====================================================
+@hs_external_bp.route("/search-leaf", methods=["POST"])
+def api_search_leaf():
+    query = request.json.get("query", "").strip()
+    if len(query) < 3:
+        return jsonify({"error": "Query quá ngắn"}), 400
+
+    # 1. extract keyword
+    keywords = ai_extract_keywords(query)
+
+    # 2. semantic expand
+    keywords = expand_keywords(keywords)
+    logger.warning("KEYWORDS NORMALIZED: %s", keywords)
+
+    # 3. local filter
+    shortlist = filter_leaf_by_keywords(keywords)
+    if not shortlist:
+        return jsonify({"groups": []})
+
+    # 4. AI ranking
+    ranked_codes = ai_rank_leafs(query, shortlist)
+
+    # fallback
+    if not ranked_codes:
         return jsonify({
-            "status": "healthy",
-            "hs_codes_loaded": codes_count,
-            "ai_provider": "Groq",
-            "model": MODEL_AI
-        }), 200
-    except Exception as e:
-        return jsonify({
-            "status": "unhealthy",
-            "error": str(e)
-        }), 500
+            "groups": [
+                {"code": l["leaf_code"], "name": l["leaf_name"]}
+                for l in shortlist[:5]
+            ]
+        })
+
+    result = []
+    for code in ranked_codes:
+        leaf = find_leaf_by_code(code)
+        if leaf:
+            result.append({
+                "code": leaf["leaf_code"],
+                "name": leaf["leaf_name"]
+            })
+
+    return jsonify({"groups": result})
+
+# =====================================================
+# API 2: FIND BY LEAF
+# =====================================================
+@hs_external_bp.route("/find-by-leaf", methods=["POST"])
+def api_find_by_leaf():
+    leaf_code = request.json.get("leaf_code")
+    leaf = find_leaf_by_code(leaf_code)
+
+    if not leaf:
+        return jsonify({"error": "Leaf không tồn tại"}), 404
+
+    return jsonify({
+        "leaf_code": leaf_code,
+        "leaf_name": leaf["leaf_name"],
+        "items": get_hs_codes_by_leaf(leaf)
+    })
+
+# =====================================================
+# API 3: CONFIRM HS
+# =====================================================
+EXACT_PROMPT = """
+Bạn là hệ thống CHỌN mã HS từ danh sách CỐ ĐỊNH.
+
+⚠️ QUY TẮC:
+- KHÔNG tạo mã mới
+- KHÔNG sửa mã
+- CHỈ chọn 1 ID
+- Không phù hợp → id = -1
+
+NHÓM 4 SỐ:
+{leaf_code} – {leaf_name}
+
+DANH SÁCH HS:
+{codes}
+
+MÔ TẢ:
+"{query}"
+
+TRẢ JSON:
+{{
+  "id": <number>,
+  "reason": "<ngắn>"
+}}
+"""
+
+@hs_external_bp.route("/confirm-hs", methods=["POST"])
+def api_confirm_hs():
+    data = request.json
+    leaf_code = data.get("leaf_code")
+    query = data.get("query", "").strip()
+
+    leaf = find_leaf_by_code(leaf_code)
+    if not leaf:
+        return jsonify({"error": "Leaf không tồn tại"}), 404
+
+    items = get_hs_codes_by_leaf(leaf)
+    id_map = {i["id"]: i for i in items}
+
+    code_lines = [
+        f"{i['id']}. {i['code']} – {i['name']}"
+        for i in items
+    ]
+
+    prompt = EXACT_PROMPT.format(
+        leaf_code=leaf_code,
+        leaf_name=leaf["leaf_name"],
+        codes="\n".join(code_lines),
+        query=query
+    )
+
+    def generate():
+        buffer = ""
+        for t in stream_ai(prompt):
+            buffer += t
+
+        raw = extract_json(buffer)
+        if not raw:
+            yield "❌ AI không trả JSON hợp lệ\n\n"
+            return
+
+        try:
+            result = json.loads(raw)
+            selected_id = result.get("id")
+
+            if selected_id not in id_map:
+                yield "❌ Không xác định được mã HS phù hợp\n\n"
+                return
+
+            item = id_map[selected_id]
+            yield f"Mã HS: {item['code']}\n\n"
+            yield f"Mô tả: {item['name']}\n\n"
+
+        except Exception as e:
+            logger.exception(e)
+            yield "❌ Lỗi xử lý AI\n\n"
+
+    return Response(
+        stream_with_context(generate()),
+        content_type="text/event-stream",
+        headers={"Cache-Control": "no-cache"}
+    )
