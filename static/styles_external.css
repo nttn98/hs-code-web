@@ -192,7 +192,7 @@ body {
   margin-bottom: 10px;
   background: white;
   transition: 0.2s;
-  display: flex;
+  /* display: flex; */
   justify-content: space-between;
   align-items: center;
   cursor: pointer;

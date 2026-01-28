@@ -136,15 +136,24 @@
         const data = await res.json();
 
         const bot = addBot("");
-        bot.innerHTML = data.groups
+
+        let html =
+          '<div style="margin-bottom: 15px;"><strong>🔍 Nhóm chính (HS 4 số)</strong></div>';
+        html += data.groups
           .map(
-            (g) => `<div class="hs-group" data-code="${g.code}">
-            <b style="padding-right: 10px;">${g.code}</b> ${g.name}
+            (
+              g
+            ) => `<div class="hs-group" data-code="${g.code}" style="margin-bottom: 8px; cursor: pointer; padding: 8px; border-radius: 4px; transition: background 0.2s;">
+            <span style="margin-right: 8px;">•</span><b>${g.code}</b> – ${g.name}
           </div>`
           )
           .join("");
 
+        bot.innerHTML = html;
+
         bot.querySelectorAll(".hs-group").forEach((el) => {
+          el.onmouseover = () => (el.style.background = "#f0f0f0");
+          el.onmouseout = () => (el.style.background = "transparent");
           el.onclick = () => {
             selectedLeaf = el.dataset.code;
             loadHs(selectedLeaf);
@@ -164,16 +173,35 @@
         });
         const data = await res.json();
 
-        addBot(
-          `<b>${data.leaf_code}</b> – ${data.leaf_name}<br><br>` +
-            data.items.map((i) => `${i.code} – ${i.name}`).join("<br>") +
-            `<br><br><i>👉 Nhập mô tả chi tiết để xác nhận</i>`
-        );
+        let html = `<b>📌 ${data.leaf_code}</b> – ${data.leaf_name}<br><br>`;
+        html += `<div style="margin-bottom: 15px;"><strong>📋 Danh sách HS codes (${data.total_items} mã)</strong></div>`;
+        html += data.items
+          .map(
+            (i) =>
+              `<div style="margin-bottom: 6px;"><span style="margin-right: 8px;">•</span>${i.code} – ${i.name}</div>`
+          )
+          .join("");
+        html += `<br><br><i>👉 Nhập mô tả chi tiết để xác nhận HS code chính xác</i>`;
+
+        addBot(html);
       }
 
       /* STEP 3 */
       async function confirmHs(text) {
         statusBadge.textContent = "🔍 Đang xác nhận HS...";
+
+        // Lấy thông tin nhóm chính
+        const leafRes = await fetch("/api/hs/external/find-by-leaf", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ leaf_code: selectedLeaf }),
+        });
+        const leafData = await leafRes.json();
+
+        // Hiển thị nhóm chính
+        let headerHtml = `<b>📌 ${leafData.leaf_code}</b> – ${leafData.leaf_name}<br>`;
+        headerHtml += `<div style="margin-bottom: 15px; margin-top: 10px;"><strong>✅ HS Code chính xác:</strong></div>`;
+        addBot(headerHtml);
 
         const bot = addBot("");
         const res = await fetch("/api/hs/external/confirm-hs", {
@@ -190,8 +218,12 @@
           bot.innerHTML += decoder.decode(value);
         }
 
-        statusBadge.textContent = "✅ Hoàn tất";
+        statusBadge.textContent = "✅ Hoàn tát";
         statusBadge.className = "status-badge done";
+
+        // Reset để có thể tìm kiếm hàng hóa mới
+        selectedLeaf = null;
+        addBot("<br><i>💬 Nhập mô tả hàng hóa mới để tiếp tục...</i>");
       }
     </script>
   </body>
